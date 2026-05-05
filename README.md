@@ -11,6 +11,7 @@ Turn any git repository into your terminal notebook.
 - `zemo` — open the scratch memo (`<memo>/scratch.txt`).
 - `zemo <topic>` — open `<memo>/topics/<topic>.md`. Created with a `# <topic>` header on first use.
 - `zemo sync` — pull, stage, commit, and push the memo repository.
+- `zemo ls` — list topic names from `<memo>/topics/` (alphabetical).
 - Auto pull-on-open / commit-on-close when `<memo>/.git` exists.
 - Conventional Commits messages: `docs(<scope>): YYYY-MM-DD HH:MM` for edits, `chore: sync ...` for manual sync.
 - Single static binary on Linux / macOS / Windows.
@@ -98,6 +99,7 @@ Override the location with `ZEMO_DIR` (see [Configuration](#configuration)).
 zemo                # open the scratch memo
 zemo journal        # open ~/memo/topics/journal.md
 zemo sync           # manual pull / commit / push
+zemo ls             # list topic names
 zemo --help
 zemo --version
 ```
@@ -106,12 +108,12 @@ Topic names must match `[a-zA-Z0-9_-]` (slashes, dots, spaces, and multibyte cha
 
 ## Configuration
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `ZEMO_DIR` | Memo directory root | `$HOME/memo` (Unix), `%USERPROFILE%\memo` (Windows) |
-| `ZEMO_EDITOR` | Editor command (highest priority) | — |
-| `VISUAL` | Editor command | — |
-| `EDITOR` | Editor command | — |
+| Variable      | Purpose                           | Default                                             |
+| ------------- | --------------------------------- | --------------------------------------------------- |
+| `ZEMO_DIR`    | Memo directory root               | `$HOME/memo` (Unix), `%USERPROFILE%\memo` (Windows) |
+| `ZEMO_EDITOR` | Editor command (highest priority) | —                                                   |
+| `VISUAL`      | Editor command                    | —                                                   |
+| `EDITOR`      | Editor command                    | —                                                   |
 
 If none of the editor variables are set, `zemo` falls back to the first available editor in `PATH`:
 
@@ -130,11 +132,11 @@ Editor strings are split on whitespace, so `ZEMO_EDITOR="code --wait"` works. Sh
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| 0 | Success (including "no local changes" on `sync`) |
-| 1 | Runtime error (git failure, editor failure, missing editor, invalid topic name, …) |
-| 2 | CLI usage error (too many arguments, etc.) |
+| Code | Meaning                                                                            |
+| ---- | ---------------------------------------------------------------------------------- |
+| 0    | Success (including "no local changes" on `sync`)                                   |
+| 1    | Runtime error (git failure, editor failure, missing editor, invalid topic name, …) |
+| 2    | CLI usage error (too many arguments, etc.)                                         |
 
 ## Development
 
