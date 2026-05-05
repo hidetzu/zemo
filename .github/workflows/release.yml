@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-linux-gnu
+            archive: tar.gz
+            bin: zemo
+          - target: x86_64-macos
+            archive: tar.gz
+            bin: zemo
+          - target: aarch64-macos
+            archive: tar.gz
+            bin: zemo
+          - target: x86_64-windows
+            archive: zip
+            bin: zemo.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+
+      - name: Package
+        id: package
+        run: |
+          # Use unversioned archive names so that the canonical
+          # https://github.com/hidetzu/zemo/releases/latest/download/<file>
+          # URL keeps working across releases.
+          NAME="zemo-${{ matrix.target }}"
+          mkdir -p "$NAME"
+          cp "zig-out/bin/${{ matrix.bin }}" "$NAME/"
+          cp LICENSE README.md "$NAME/"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            zip -r "${NAME}.zip" "$NAME"
+            echo "file=${NAME}.zip" >> "$GITHUB_OUTPUT"
+          else
+            tar czf "${NAME}.tar.gz" "$NAME"
+            echo "file=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.package.outputs.file }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
