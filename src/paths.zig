@@ -39,12 +39,22 @@ pub fn resolveMemoDir(
     return std.fs.path.join(allocator, &.{ h, "memo" });
 }
 
-/// I/O 側: 環境マップから値を読んで resolveMemoDir に渡すだけ
-pub fn memoDir(allocator: std.mem.Allocator, env: *const std.process.Environ.Map) ![]u8 {
+/// I/O 側: 環境マップから値を読んで resolveMemoDir に渡し、絶対パス化する。
+pub fn memoDir(allocator: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) ![]u8 {
     const zemo_dir = env.get("ZEMO_DIR");
     const home_var = if (@import("builtin").os.tag == .windows) "USERPROFILE" else "HOME";
     const home = env.get(home_var);
-    return resolveMemoDir(allocator, zemo_dir, home);
+    const dir = try resolveMemoDir(allocator, zemo_dir, home);
+    defer allocator.free(dir);
+    return absolutePath(allocator, io, dir);
+}
+
+fn absolutePath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
+
+    const cwd = try std.process.currentPathAlloc(io, allocator);
+    defer allocator.free(cwd);
+    return std.fs.path.resolve(allocator, &.{ cwd, path });
 }
 
 test "isValidTopic: accepts alphanumerics, underscore, hyphen" {
@@ -107,4 +117,22 @@ test "resolveMemoDir: falls back to HOME/memo on unix" {
 test "resolveMemoDir: errors when no env available" {
     const a = std.testing.allocator;
     try std.testing.expectError(error.HomeNotSet, resolveMemoDir(a, null, null));
+}
+
+test "absolutePath: keeps absolute paths" {
+    const a = std.testing.allocator;
+    const cwd = try std.process.currentPathAlloc(std.testing.io, a);
+    defer a.free(cwd);
+
+    const got = try absolutePath(a, std.testing.io, cwd);
+    defer a.free(got);
+    try std.testing.expectEqualStrings(cwd, got);
+}
+
+test "absolutePath: resolves relative paths from cwd" {
+    const a = std.testing.allocator;
+    const got = try absolutePath(a, std.testing.io, "relative-memo");
+    defer a.free(got);
+    try std.testing.expect(std.fs.path.isAbsolute(got));
+    try std.testing.expect(std.mem.endsWith(u8, got, std.fs.path.sep_str ++ "relative-memo"));
 }

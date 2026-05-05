@@ -10,6 +10,7 @@ pub const Command = union(enum) {
     open_scratch,
     open_topic: []const u8,
     sync,
+    ls,
     help,
     version,
     too_many_args,
@@ -20,6 +21,7 @@ pub fn parseArgs(args: []const []const u8) Command {
     if (args.len <= 1) return .open_scratch;
     const a = args[1];
     if (std.mem.eql(u8, a, "sync")) return .sync;
+    if (std.mem.eql(u8, a, "ls")) return .ls;
     if (std.mem.eql(u8, a, "help") or std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h"))
         return .help;
     if (std.mem.eql(u8, a, "version") or std.mem.eql(u8, a, "--version") or std.mem.eql(u8, a, "-V"))
@@ -35,6 +37,7 @@ const HELP_TEXT =
     \\  zemo                Open scratch memo
     \\  zemo <topic>        Open topics/<topic>.md
     \\  zemo sync           Manually pull/commit/push the memo repo
+    \\  zemo ls             List topic names (alphabetical)
     \\  zemo help           Show this help
     \\  zemo version        Show version
     \\
@@ -78,6 +81,7 @@ pub fn run(
         .open_scratch => try openScratch(allocator, io, env, stderr),
         .open_topic => |t| try openTopic(allocator, io, env, stderr, t),
         .sync => try doSync(allocator, io, env, stderr, stdout),
+        .ls => try doLs(allocator, io, env, stdout),
     };
 }
 
@@ -87,7 +91,7 @@ fn openScratch(
     env: *const std.process.Environ.Map,
     stderr: *Io.Writer,
 ) !u8 {
-    const dir = try paths.memoDir(allocator, env);
+    const dir = try paths.memoDir(allocator, io, env);
     defer allocator.free(dir);
 
     try ensureDir(io, dir);
@@ -119,7 +123,7 @@ fn openTopic(
         return 1;
     }
 
-    const dir = try paths.memoDir(allocator, env);
+    const dir = try paths.memoDir(allocator, io, env);
     defer allocator.free(dir);
 
     try ensureDir(io, dir);
@@ -151,7 +155,7 @@ fn doSync(
     stderr: *Io.Writer,
     stdout: *Io.Writer,
 ) !u8 {
-    const dir = try paths.memoDir(allocator, env);
+    const dir = try paths.memoDir(allocator, io, env);
     defer allocator.free(dir);
 
     if (!git.isGitRepo(allocator, io, dir)) {
@@ -178,6 +182,52 @@ fn doSync(
     git.commit(io, dir, msg) catch |err| return reportGit(stderr, "git commit", err);
     git.push(io, dir) catch |err| return reportGit(stderr, "git push", err);
     return 0;
+}
+
+/// lsコマンド実行関数
+fn doLs(allocator: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map, stdout: *Io.Writer) !u8 {
+    const memo = try paths.memoDir(allocator, io, env);
+    defer allocator.free(memo);
+
+    const topics_dir_path = try std.fs.path.join(allocator, &.{ memo, "topics" });
+    defer allocator.free(topics_dir_path);
+
+    return listTopics(allocator, io, topics_dir_path, stdout);
+}
+
+fn listTopics(allocator: std.mem.Allocator, io: Io, topics_dir_path: []const u8, stdout: *Io.Writer) !u8 {
+    var topics_dir = Io.Dir.openDirAbsolute(io, topics_dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return 0, // topics/ 無し → 何も出さず終了
+        else => return err,
+    };
+    defer topics_dir.close(io);
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (names.items) |s| allocator.free(s);
+        names.deinit(allocator);
+    }
+
+    var it = topics_dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
+        const stem = entry.name[0 .. entry.name.len - ".md".len];
+        if (stem.len == 0) continue; // ".md" だけのファイルは弾く
+
+        const owned = try allocator.dupe(u8, stem);
+        try names.append(allocator, owned);
+    }
+
+    std.mem.sort([]const u8, names.items, {}, lessThanString);
+    for (names.items) |name| {
+        try stdout.print("{s}\n", .{name});
+    }
+    return 0;
+}
+
+fn lessThanString(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
 }
 
 /// エディタ起動 → post-sync の共通フロー。
@@ -268,6 +318,10 @@ test "parseArgs: sync subcommand" {
     try std.testing.expectEqual(Command.sync, parseArgs(&.{ "zemo", "sync" }));
 }
 
+test "parseArgs: ls subcommand" {
+    try std.testing.expectEqual(Command.ls, parseArgs(&.{ "zemo", "ls" }));
+}
+
 test "parseArgs: help variants" {
     try std.testing.expectEqual(Command.help, parseArgs(&.{ "zemo", "help" }));
     try std.testing.expectEqual(Command.help, parseArgs(&.{ "zemo", "--help" }));
@@ -282,4 +336,38 @@ test "parseArgs: version variants" {
 
 test "parseArgs: too many args" {
     try std.testing.expectEqual(Command.too_many_args, parseArgs(&.{ "zemo", "a", "b" }));
+}
+
+// ---- listTopics ----
+test "listTopics: alphabetical order, only .md files" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // topics/ + .md ファイル + ノイズを仕込む
+    try tmp.dir.createDir(io, "topics", .default_dir);
+    var topics = try tmp.dir.openDir(io, "topics", .{});
+    defer topics.close(io);
+
+    // ヘルパで .md / .txt / サブディレクトリを作る
+    inline for (.{ "foo.md", "bar.md", "ignore.txt" }) |name| {
+        const f = try topics.createFile(io, name, .{});
+        f.close(io);
+    }
+    try topics.createDir(io, "should-skip-dir", .default_dir);
+
+    // realPath で topics/ のフルパスを取る
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try topics.realPath(io, &path_buf);
+    const topics_path = path_buf[0..len];
+
+    // in-memory writer
+    var alloc_w = std.Io.Writer.Allocating.init(a);
+    defer alloc_w.deinit();
+
+    _ = try listTopics(a, io, topics_path, &alloc_w.writer);
+    try alloc_w.writer.flush();
+
+    try std.testing.expectEqualStrings("bar\nfoo\n", alloc_w.written());
 }
