@@ -1,0 +1,76 @@
+name: Bug report
+description: Something is not working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill in the fields below.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Provide the exact commands you ran and the relevant environment variables (`ZEMO_DIR`, `ZEMO_EDITOR`, `EDITOR`, etc.).
+      placeholder: |
+        1. ZEMO_DIR=/tmp/example zemo hello
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the full output (stdout + stderr) and the exit code.
+    validations:
+      required: true
+
+  - type: input
+    id: zemo-version
+    attributes:
+      label: zemo version
+      description: Output of `zemo --version`.
+      placeholder: "zemo 0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: zig-version
+    attributes:
+      label: Zig version (only if building from source)
+      description: Output of `zig version`.
+      placeholder: "0.16.0"
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other (please specify in additional context)
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might be useful (architecture, terminal, shell, custom editor, etc.).

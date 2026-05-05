@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Run tests
+        run: zig build test
+
+  cross-build:
+    name: Cross-build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-linux-gnu
+          - x86_64-linux-musl
+          - x86_64-macos
+          - aarch64-macos
+          - x86_64-windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build for ${{ matrix.target }}
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zemo-${{ matrix.target }}
+          path: |
+            zig-out/bin/zemo
+            zig-out/bin/zemo.exe
+          if-no-files-found: error
+          retention-days: 7
