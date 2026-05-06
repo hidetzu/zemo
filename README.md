@@ -14,7 +14,7 @@ Turn any git repository into your terminal notebook.
 - `zemo ls` — list topic names from `<memo>/topics/` (alphabetical).
 - `zemo cat [topic]` — print scratch (or `topics/<topic>.md`) to stdout. Read-only, no git operations.
 - `zemo dump` — print scratch and all topics to stdout with section headers. Read-only, no git operations.
-- `zemo upgrade` — download and install the latest release in-place. `--check` to dry-run (Unix only for now; Windows tracked in #11).
+- `zemo upgrade` — download and install the latest release in-place. `--check` to dry-run.
 - Auto pull-on-open / commit-on-close when `<memo>/.git` exists.
 - Conventional Commits messages: `docs(<scope>): YYYY-MM-DD HH:MM` for edits, `chore: sync ...` for manual sync.
 - Single static binary on Linux / macOS / Windows.

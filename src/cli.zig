@@ -485,19 +485,28 @@ fn doUpgrade(allocator: std.mem.Allocator, io: Io, stdout: *Io.Writer, stderr: *
                     };
                     defer allocator.free(archive);
 
-                    // 3. アーカイブから zemo バイナリを抽出
-                    const new_binary = upgrade.extractZemoBinary(allocator, archive, upgrade.binaryBasename()) catch |err| {
-                        try stderr.print("zemo: failed to extract binary: {s}\n", .{@errorName(err)});
-                        return 1;
-                    };
-                    defer allocator.free(new_binary);
-
-                    // 4. 自分自身のパスを取得して置換
+                    // 3. 先に install_path を解決 (zip 抽出の作業領域として親ディレクトリを使う)
                     const install_path = upgrade.installPath(allocator, io) catch |err| {
                         try stderr.print("zemo: failed to resolve install path: {s}\n", .{@errorName(err)});
                         return 1;
                     };
                     defer allocator.free(install_path);
+
+                    // 4. アーカイブ形式に応じてバイナリを取り出す
+                    const new_binary = if (std.mem.endsWith(u8, asset, ".zip")) blk: {
+                        const work_dir = std.fs.path.dirname(install_path) orelse {
+                            try stderr.print("zemo: cannot determine working dir from install path: {s}\n", .{install_path});
+                            return 1;
+                        };
+                        break :blk upgrade.extractZemoBinaryFromZip(allocator, io, archive, upgrade.binaryBasename(), work_dir) catch |err| {
+                            try stderr.print("zemo: failed to extract binary: {s}\n", .{@errorName(err)});
+                            return 1;
+                        };
+                    } else upgrade.extractZemoBinary(allocator, archive, upgrade.binaryBasename()) catch |err| {
+                        try stderr.print("zemo: failed to extract binary: {s}\n", .{@errorName(err)});
+                        return 1;
+                    };
+                    defer allocator.free(new_binary);
 
                     upgrade.replaceBinary(allocator, io, install_path, new_binary) catch |err| {
                         try stderr.print("zemo: failed to replace binary at {s}: {s}\n", .{ install_path, @errorName(err) });
