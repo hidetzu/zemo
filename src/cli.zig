@@ -11,6 +11,7 @@ pub const Command = union(enum) {
     open_topic: []const u8,
     sync,
     ls,
+    cat: ?[]const u8,
     help,
     version,
     too_many_args,
@@ -22,6 +23,13 @@ pub fn parseArgs(args: []const []const u8) Command {
     const a = args[1];
     if (std.mem.eql(u8, a, "sync")) return .sync;
     if (std.mem.eql(u8, a, "ls")) return .ls;
+    if (std.mem.eql(u8, a, "cat")) {
+        return switch (args.len) {
+            2 => .{ .cat = null },
+            3 => .{ .cat = args[2] },
+            else => .too_many_args,
+        };
+    }
     if (std.mem.eql(u8, a, "help") or std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h"))
         return .help;
     if (std.mem.eql(u8, a, "version") or std.mem.eql(u8, a, "--version") or std.mem.eql(u8, a, "-V"))
@@ -38,6 +46,8 @@ const HELP_TEXT =
     \\  zemo <topic>        Open topics/<topic>.md
     \\  zemo sync           Manually pull/commit/push the memo repo
     \\  zemo ls             List topic names (alphabetical)
+    \\  zemo cat            Print scratch memo to stdout
+    \\  zemo cat <topic>    Print topics/<topic>.md to stdout
     \\  zemo help           Show this help
     \\  zemo version        Show version
     \\
@@ -82,6 +92,7 @@ pub fn run(
         .open_topic => |t| try openTopic(allocator, io, env, stderr, t),
         .sync => try doSync(allocator, io, env, stderr, stdout),
         .ls => try doLs(allocator, io, env, stdout),
+        .cat => |t| try doCat(allocator, io, env, stdout, stderr, t),
     };
 }
 
@@ -184,6 +195,23 @@ fn doSync(
     return 0;
 }
 
+// cat実行関数
+fn doCat(allocator: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map, stdout: *Io.Writer, stderr: *Io.Writer, topic: ?[]const u8) !u8 {
+    const memo = try paths.memoDir(allocator, io, env);
+    defer allocator.free(memo);
+
+    const file_path = if (topic) |t| blk: {
+        if (!paths.isValidTopic(t)) {
+            try stderr.print("zemo: invalid topic name '{s}': allowed [a-zA-Z0-9_-]\n", .{t});
+            return 1;
+        }
+        break :blk try paths.topicPath(allocator, memo, t);
+    } else try paths.scratchPath(allocator, memo);
+    defer allocator.free(file_path);
+
+    return printFile(io, file_path, stdout, stderr);
+}
+
 /// lsコマンド実行関数
 fn doLs(allocator: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map, stdout: *Io.Writer) !u8 {
     const memo = try paths.memoDir(allocator, io, env);
@@ -193,6 +221,23 @@ fn doLs(allocator: std.mem.Allocator, io: Io, env: *const std.process.Environ.Ma
     defer allocator.free(topics_dir_path);
 
     return listTopics(allocator, io, topics_dir_path, stdout);
+}
+
+fn printFile(io: Io, file_path: []const u8, stdout: *Io.Writer, stderr: *Io.Writer) !u8 {
+    var file = Io.Dir.openFileAbsolute(io, file_path, .{ .mode = .read_only }) catch |err| switch (err) {
+        error.FileNotFound => {
+            try stderr.print("zemo: no such file: {s}\n", .{file_path});
+            return 1;
+        },
+        else => return err,
+    };
+    defer file.close(io);
+
+    var read_buf: [4096]u8 = undefined;
+    var file_reader = file.reader(io, &read_buf);
+    _ = try file_reader.interface.streamRemaining(stdout);
+
+    return 0;
 }
 
 fn listTopics(allocator: std.mem.Allocator, io: Io, topics_dir_path: []const u8, stdout: *Io.Writer) !u8 {
@@ -370,4 +415,90 @@ test "listTopics: alphabetical order, only .md files" {
     try alloc_w.writer.flush();
 
     try std.testing.expectEqualStrings("bar\nfoo\n", alloc_w.written());
+}
+
+test "parseArgs: cat without topic" {
+    const cmd = parseArgs(&.{ "zemo", "cat" });
+    switch (cmd) {
+        .cat => |t| try std.testing.expectEqual(@as(?[]const u8, null), t),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "parseArgs: cat with topic" {
+    const cmd = parseArgs(&.{ "zemo", "cat", "hello" });
+    switch (cmd) {
+        .cat => |t| {
+            try std.testing.expect(t != null);
+            try std.testing.expectEqual("hello", t.?);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "parseArgs: cat too many args" {
+    try std.testing.expectEqual(Command.too_many_args, parseArgs(&.{ "zemo", "cat", "a", "b" }));
+}
+
+test "printFile: prints file contents to stdout" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // 内容を書いたファイルを作る
+    {
+        var f = try tmp.dir.createFile(io, "hello.md", .{});
+        defer f.close(io);
+        var buf: [256]u8 = undefined;
+        var w = f.writer(io, &buf);
+        try w.interface.writeAll("# hello\nworld\n");
+        try w.interface.flush();
+    }
+
+    // realPath で絶対パス取得
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &path_buf);
+    const file_path = try std.fs.path.join(a, &.{ path_buf[0..len], "hello.md" });
+    defer a.free(file_path);
+
+    // capture buffers
+    var stdout = std.Io.Writer.Allocating.init(a);
+    defer stdout.deinit();
+    var stderr = std.Io.Writer.Allocating.init(a);
+    defer stderr.deinit();
+
+    const code = try printFile(io, file_path, &stdout.writer, &stderr.writer);
+    try stdout.writer.flush();
+    try stderr.writer.flush();
+
+    try std.testing.expectEqual(@as(u8, 0), code);
+    try std.testing.expectEqualStrings("# hello\nworld\n", stdout.written());
+    try std.testing.expectEqualStrings("", stderr.written());
+}
+
+test "printFile: missing file → exit 1, stderr message" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &path_buf);
+    const missing = try std.fs.path.join(a, &.{ path_buf[0..len], "nope.md" });
+    defer a.free(missing);
+
+    var stdout = std.Io.Writer.Allocating.init(a);
+    defer stdout.deinit();
+    var stderr = std.Io.Writer.Allocating.init(a);
+    defer stderr.deinit();
+
+    const code = try printFile(io, missing, &stdout.writer, &stderr.writer);
+    try stdout.writer.flush();
+    try stderr.writer.flush();
+
+    try std.testing.expectEqual(@as(u8, 1), code);
+    try std.testing.expectEqualStrings("", stdout.written());
+    // stderr に "no such file" が含まれるかをチェック
+    try std.testing.expect(std.mem.indexOf(u8, stderr.written(), "no such file") != null);
 }
