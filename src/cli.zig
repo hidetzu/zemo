@@ -58,7 +58,7 @@ const HELP_TEXT =
     \\
 ;
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 /// CLI のエントリ。終了コードを返す。
 pub fn run(
