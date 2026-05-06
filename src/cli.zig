@@ -5,6 +5,7 @@ const paths = @import("paths.zig");
 const editor = @import("editor.zig");
 const git = @import("git.zig");
 const time = @import("time.zig");
+const upgrade = @import("upgrade.zig");
 
 pub const Command = union(enum) {
     open_scratch,
@@ -13,6 +14,7 @@ pub const Command = union(enum) {
     ls,
     cat: ?[]const u8,
     dump,
+    upgrade: upgrade.UpgradeMode,
     help,
     version,
     too_many_args,
@@ -32,6 +34,11 @@ pub fn parseArgs(args: []const []const u8) Command {
         };
     }
     if (std.mem.eql(u8, a, "dump")) return if (args.len == 2) .dump else .too_many_args;
+    if (std.mem.eql(u8, a, "upgrade")) {
+        if (args.len == 2) return .{ .upgrade = .run };
+        if ((args.len == 3) and std.mem.eql(u8, args[2], "--check")) return .{ .upgrade = .check };
+        return .too_many_args;
+    }
     if (std.mem.eql(u8, a, "help") or std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h"))
         return .help;
     if (std.mem.eql(u8, a, "version") or std.mem.eql(u8, a, "--version") or std.mem.eql(u8, a, "-V"))
@@ -51,6 +58,7 @@ const HELP_TEXT =
     \\  zemo cat            Print scratch memo to stdout
     \\  zemo cat <topic>    Print topics/<topic>.md to stdout
     \\  zemo dump           Print scratch and all topics to stdout
+    \\  zemo upgrade        Download and install the latest release (--check to dry-run)
     \\  zemo help           Show this help
     \\  zemo version        Show version
     \\
@@ -58,7 +66,7 @@ const HELP_TEXT =
     \\
 ;
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 /// CLI のエントリ。終了コードを返す。
 pub fn run(
@@ -97,6 +105,7 @@ pub fn run(
         .ls => try doLs(allocator, io, env, stdout),
         .cat => |t| try doCat(allocator, io, env, stdout, stderr, t),
         .dump => try doDump(allocator, io, env, stdout),
+        .upgrade => |mode| try doUpgrade(allocator, io, stdout, stderr, mode),
     };
 }
 
@@ -432,6 +441,83 @@ fn ensureFile(io: Io, abs_path: []const u8, template: ?[]const u8) !void {
     };
 }
 
+fn doUpgrade(allocator: std.mem.Allocator, io: Io, stdout: *Io.Writer, stderr: *Io.Writer, mode: upgrade.UpgradeMode) !u8 {
+    const json = upgrade.fetchLatestReleaseJson(allocator, io) catch |err| {
+        try stderr.print("zemo: failed to check latest release: {s}\n", .{@errorName(err)});
+        return 1;
+    };
+    defer allocator.free(json);
+
+    const parsed = upgrade.parseReleaseJson(allocator, json) catch |err| {
+        try stderr.print("zemo: failed to parse GitHub response: {s}\n", .{@errorName(err)});
+        return 1;
+    };
+    defer parsed.deinit();
+
+    const cmp = upgrade.compareVersions(VERSION, parsed.value.tag_name);
+    switch (cmp) {
+        .equal, .newer => {
+            try stdout.print("Already up to date (v{s})\n", .{VERSION});
+            return 0;
+        },
+        .older => {
+            switch (mode) {
+                .check => {
+                    try stdout.print("Newer version available: v{s} -> {s}\n", .{ VERSION, parsed.value.tag_name });
+                    return 0;
+                },
+                .run => {
+                    // 1. 自分のプラットフォーム用アセットの URL を取得
+                    const asset = upgrade.assetName() catch |err| {
+                        try stderr.print("zemo: no prebuilt binary for current target: {s}\n", .{@errorName(err)});
+                        return 1;
+                    };
+                    const url = upgrade.findAssetUrl(parsed.value, asset) orelse {
+                        try stderr.print("zemo: asset '{s}' not found in release\n", .{asset});
+                        return 1;
+                    };
+
+                    // 2. アーカイブをダウンロード
+                    try stdout.print("Downloading {s}...\n", .{asset});
+                    const archive = upgrade.downloadToMemory(allocator, io, url) catch |err| {
+                        try stderr.print("zemo: failed to download: {s}\n", .{@errorName(err)});
+                        return 1;
+                    };
+                    defer allocator.free(archive);
+
+                    // 3. アーカイブから zemo バイナリを抽出
+                    const new_binary = upgrade.extractZemoBinary(allocator, archive, upgrade.binaryBasename()) catch |err| {
+                        try stderr.print("zemo: failed to extract binary: {s}\n", .{@errorName(err)});
+                        return 1;
+                    };
+                    defer allocator.free(new_binary);
+
+                    // 4. 自分自身のパスを取得して置換
+                    const install_path = upgrade.installPath(allocator, io) catch |err| {
+                        try stderr.print("zemo: failed to resolve install path: {s}\n", .{@errorName(err)});
+                        return 1;
+                    };
+                    defer allocator.free(install_path);
+
+                    upgrade.replaceBinary(allocator, io, install_path, new_binary) catch |err| {
+                        try stderr.print("zemo: failed to replace binary at {s}: {s}\n", .{ install_path, @errorName(err) });
+                        return 1;
+                    };
+
+                    try stdout.print("Upgraded v{s} -> {s}\n", .{ VERSION, parsed.value.tag_name });
+                    return 0;
+                },
+            }
+        },
+        .invalid => {
+            try stderr.print("zemo: cannot parse version: current={s}, latest={s}\n", .{ VERSION, parsed.value.tag_name });
+            return 1;
+        },
+    }
+
+    return 0;
+}
+
 test "parseArgs: no args opens scratch" {
     try std.testing.expectEqual(Command.open_scratch, parseArgs(&.{"zemo"}));
 }
@@ -717,4 +803,28 @@ test "doDump: uses ZEMO_DIR override" {
 
     try std.testing.expectEqual(@as(u8, 0), code);
     try std.testing.expectEqualStrings("=== scratch ===\n\nfrom-zemo-dir\n", stdout.written());
+}
+
+test "parseArgs: upgrade run" {
+    const cmd = parseArgs(&.{ "zemo", "upgrade" });
+    switch (cmd) {
+        .upgrade => |mode| try std.testing.expectEqual(upgrade.UpgradeMode.run, mode),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "parseArgs: upgrade check" {
+    const cmd = parseArgs(&.{ "zemo", "upgrade", "--check" });
+    switch (cmd) {
+        .upgrade => |mode| try std.testing.expectEqual(upgrade.UpgradeMode.check, mode),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "parseArgs: upgrade with invalid arg" {
+    try std.testing.expectEqual(Command.too_many_args, parseArgs(&.{ "zemo", "upgrade", "foo" }));
+}
+
+test "parseArgs: upgrade with too many args" {
+    try std.testing.expectEqual(Command.too_many_args, parseArgs(&.{ "zemo", "upgrade", "--check", "extra" }));
 }
