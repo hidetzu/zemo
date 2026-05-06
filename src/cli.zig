@@ -12,6 +12,7 @@ pub const Command = union(enum) {
     sync,
     ls,
     cat: ?[]const u8,
+    dump,
     help,
     version,
     too_many_args,
@@ -30,6 +31,7 @@ pub fn parseArgs(args: []const []const u8) Command {
             else => .too_many_args,
         };
     }
+    if (std.mem.eql(u8, a, "dump")) return if (args.len == 2) .dump else .too_many_args;
     if (std.mem.eql(u8, a, "help") or std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h"))
         return .help;
     if (std.mem.eql(u8, a, "version") or std.mem.eql(u8, a, "--version") or std.mem.eql(u8, a, "-V"))
@@ -48,6 +50,7 @@ const HELP_TEXT =
     \\  zemo ls             List topic names (alphabetical)
     \\  zemo cat            Print scratch memo to stdout
     \\  zemo cat <topic>    Print topics/<topic>.md to stdout
+    \\  zemo dump           Print scratch and all topics to stdout
     \\  zemo help           Show this help
     \\  zemo version        Show version
     \\
@@ -93,6 +96,7 @@ pub fn run(
         .sync => try doSync(allocator, io, env, stderr, stdout),
         .ls => try doLs(allocator, io, env, stdout),
         .cat => |t| try doCat(allocator, io, env, stdout, stderr, t),
+        .dump => try doDump(allocator, io, env, stdout),
     };
 }
 
@@ -212,6 +216,13 @@ fn doCat(allocator: std.mem.Allocator, io: Io, env: *const std.process.Environ.M
     return printFile(io, file_path, stdout, stderr);
 }
 
+fn doDump(allocator: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map, stdout: *Io.Writer) !u8 {
+    const memo = try paths.memoDir(allocator, io, env);
+    defer allocator.free(memo);
+
+    return dumpMemos(allocator, io, memo, stdout);
+}
+
 /// lsコマンド実行関数
 fn doLs(allocator: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map, stdout: *Io.Writer) !u8 {
     const memo = try paths.memoDir(allocator, io, env);
@@ -240,15 +251,92 @@ fn printFile(io: Io, file_path: []const u8, stdout: *Io.Writer, stderr: *Io.Writ
     return 0;
 }
 
+fn writeSectionHeader(stdout: *Io.Writer, name: []const u8, wrote_any: bool, previous_ended_with_newline: bool) !void {
+    if (wrote_any) {
+        try stdout.writeAll(if (previous_ended_with_newline) "\n" else "\n\n");
+    }
+    try stdout.print("=== {s} ===\n\n", .{name});
+}
+
+fn dumpSectionFileIfExists(
+    io: Io,
+    file_path: []const u8,
+    name: []const u8,
+    stdout: *Io.Writer,
+    wrote_any: *bool,
+    previous_ended_with_newline: *bool,
+) !void {
+    var file = Io.Dir.openFileAbsolute(io, file_path, .{ .mode = .read_only }) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer file.close(io);
+
+    try writeSectionHeader(stdout, name, wrote_any.*, previous_ended_with_newline.*);
+    wrote_any.* = true;
+
+    const len = try file.length(io);
+    if (len == 0) {
+        previous_ended_with_newline.* = false;
+    } else {
+        var last: [1]u8 = undefined;
+        _ = try file.readPositionalAll(io, &last, len - 1);
+        previous_ended_with_newline.* = last[0] == '\n';
+    }
+
+    var read_buf: [4096]u8 = undefined;
+    var file_reader = file.reader(io, &read_buf);
+    _ = try file_reader.interface.streamRemaining(stdout);
+}
+
+fn dumpMemos(allocator: std.mem.Allocator, io: Io, memo: []const u8, stdout: *Io.Writer) !u8 {
+    var wrote_any = false;
+    var previous_ended_with_newline = false;
+
+    const scratch_path = try paths.scratchPath(allocator, memo);
+    defer allocator.free(scratch_path);
+    try dumpSectionFileIfExists(io, scratch_path, "scratch", stdout, &wrote_any, &previous_ended_with_newline);
+
+    const topics_dir_path = try std.fs.path.join(allocator, &.{ memo, "topics" });
+    defer allocator.free(topics_dir_path);
+
+    var names = try collectTopicNames(allocator, io, topics_dir_path);
+    defer {
+        for (names.items) |s| allocator.free(s);
+        names.deinit(allocator);
+    }
+
+    for (names.items) |name| {
+        const file_path = try paths.topicPath(allocator, memo, name);
+        defer allocator.free(file_path);
+        try dumpSectionFileIfExists(io, file_path, name, stdout, &wrote_any, &previous_ended_with_newline);
+    }
+
+    return 0;
+}
+
 fn listTopics(allocator: std.mem.Allocator, io: Io, topics_dir_path: []const u8, stdout: *Io.Writer) !u8 {
+    var names = try collectTopicNames(allocator, io, topics_dir_path);
+    defer {
+        for (names.items) |s| allocator.free(s);
+        names.deinit(allocator);
+    }
+
+    for (names.items) |name| {
+        try stdout.print("{s}\n", .{name});
+    }
+    return 0;
+}
+
+fn collectTopicNames(allocator: std.mem.Allocator, io: Io, topics_dir_path: []const u8) !std.ArrayList([]const u8) {
     var topics_dir = Io.Dir.openDirAbsolute(io, topics_dir_path, .{ .iterate = true }) catch |err| switch (err) {
-        error.FileNotFound => return 0, // topics/ 無し → 何も出さず終了
+        error.FileNotFound => return .empty,
         else => return err,
     };
     defer topics_dir.close(io);
 
     var names: std.ArrayList([]const u8) = .empty;
-    defer {
+    errdefer {
         for (names.items) |s| allocator.free(s);
         names.deinit(allocator);
     }
@@ -265,10 +353,7 @@ fn listTopics(allocator: std.mem.Allocator, io: Io, topics_dir_path: []const u8,
     }
 
     std.mem.sort([]const u8, names.items, {}, lessThanString);
-    for (names.items) |name| {
-        try stdout.print("{s}\n", .{name});
-    }
-    return 0;
+    return names;
 }
 
 fn lessThanString(_: void, a: []const u8, b: []const u8) bool {
@@ -365,6 +450,10 @@ test "parseArgs: sync subcommand" {
 
 test "parseArgs: ls subcommand" {
     try std.testing.expectEqual(Command.ls, parseArgs(&.{ "zemo", "ls" }));
+}
+
+test "parseArgs: dump subcommand" {
+    try std.testing.expectEqual(Command.dump, parseArgs(&.{ "zemo", "dump" }));
 }
 
 test "parseArgs: help variants" {
@@ -501,4 +590,131 @@ test "printFile: missing file → exit 1, stderr message" {
     try std.testing.expectEqualStrings("", stdout.written());
     // stderr に "no such file" が含まれるかをチェック
     try std.testing.expect(std.mem.indexOf(u8, stderr.written(), "no such file") != null);
+}
+
+fn writeTestFile(io: Io, dir: Io.Dir, path: []const u8, contents: []const u8) !void {
+    var f = try dir.createFile(io, path, .{});
+    defer f.close(io);
+    var buf: [256]u8 = undefined;
+    var w = f.writer(io, &buf);
+    try w.interface.writeAll(contents);
+    try w.interface.flush();
+}
+
+fn tmpDirPath(allocator: std.mem.Allocator, io: Io, dir: Io.Dir) ![]u8 {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try dir.realPath(io, &path_buf);
+    return allocator.dupe(u8, path_buf[0..len]);
+}
+
+test "dumpMemos: scratch only" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestFile(io, tmp.dir, "scratch.txt", "scratch");
+    const memo = try tmpDirPath(a, io, tmp.dir);
+    defer a.free(memo);
+
+    var stdout = std.Io.Writer.Allocating.init(a);
+    defer stdout.deinit();
+
+    const code = try dumpMemos(a, io, memo, &stdout.writer);
+    try stdout.writer.flush();
+
+    try std.testing.expectEqual(@as(u8, 0), code);
+    try std.testing.expectEqualStrings("=== scratch ===\n\nscratch", stdout.written());
+}
+
+test "dumpMemos: topics only sorted and filtered" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(io, "topics", .default_dir);
+    try writeTestFile(io, tmp.dir, "topics/zemo.md", "zemo\n");
+    try writeTestFile(io, tmp.dir, "topics/git.md", "git\n");
+    try writeTestFile(io, tmp.dir, "topics/ignore.txt", "ignored\n");
+    try tmp.dir.createDir(io, "topics/subdir", .default_dir);
+
+    const memo = try tmpDirPath(a, io, tmp.dir);
+    defer a.free(memo);
+
+    var stdout = std.Io.Writer.Allocating.init(a);
+    defer stdout.deinit();
+
+    const code = try dumpMemos(a, io, memo, &stdout.writer);
+    try stdout.writer.flush();
+
+    try std.testing.expectEqual(@as(u8, 0), code);
+    try std.testing.expectEqualStrings("=== git ===\n\ngit\n\n=== zemo ===\n\nzemo\n", stdout.written());
+}
+
+test "dumpMemos: scratch and topics" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestFile(io, tmp.dir, "scratch.txt", "scratch\n");
+    try tmp.dir.createDir(io, "topics", .default_dir);
+    try writeTestFile(io, tmp.dir, "topics/beta.md", "beta");
+    try writeTestFile(io, tmp.dir, "topics/alpha.md", "alpha\n");
+
+    const memo = try tmpDirPath(a, io, tmp.dir);
+    defer a.free(memo);
+
+    var stdout = std.Io.Writer.Allocating.init(a);
+    defer stdout.deinit();
+
+    const code = try dumpMemos(a, io, memo, &stdout.writer);
+    try stdout.writer.flush();
+
+    try std.testing.expectEqual(@as(u8, 0), code);
+    try std.testing.expectEqualStrings("=== scratch ===\n\nscratch\n\n=== alpha ===\n\nalpha\n\n=== beta ===\n\nbeta", stdout.written());
+}
+
+test "dumpMemos: neither scratch nor topics prints nothing" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const memo = try tmpDirPath(a, io, tmp.dir);
+    defer a.free(memo);
+
+    var stdout = std.Io.Writer.Allocating.init(a);
+    defer stdout.deinit();
+
+    const code = try dumpMemos(a, io, memo, &stdout.writer);
+    try stdout.writer.flush();
+
+    try std.testing.expectEqual(@as(u8, 0), code);
+    try std.testing.expectEqualStrings("", stdout.written());
+}
+
+test "doDump: uses ZEMO_DIR override" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestFile(io, tmp.dir, "scratch.txt", "from-zemo-dir\n");
+    const memo = try tmpDirPath(a, io, tmp.dir);
+    defer a.free(memo);
+
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try env.put("ZEMO_DIR", memo);
+
+    var stdout = std.Io.Writer.Allocating.init(a);
+    defer stdout.deinit();
+
+    const code = try doDump(a, io, &env, &stdout.writer);
+    try stdout.writer.flush();
+
+    try std.testing.expectEqual(@as(u8, 0), code);
+    try std.testing.expectEqualStrings("=== scratch ===\n\nfrom-zemo-dir\n", stdout.written());
 }

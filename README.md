@@ -13,6 +13,7 @@ Turn any git repository into your terminal notebook.
 - `zemo sync` — pull, stage, commit, and push the memo repository.
 - `zemo ls` — list topic names from `<memo>/topics/` (alphabetical).
 - `zemo cat [topic]` — print scratch (or `topics/<topic>.md`) to stdout. Read-only, no git operations.
+- `zemo dump` — print scratch and all topics to stdout with section headers. Read-only, no git operations.
 - Auto pull-on-open / commit-on-close when `<memo>/.git` exists.
 - Conventional Commits messages: `docs(<scope>): YYYY-MM-DD HH:MM` for edits, `chore: sync ...` for manual sync.
 - Single static binary on Linux / macOS / Windows.
@@ -103,6 +104,7 @@ zemo sync           # manual pull / commit / push
 zemo ls             # list topic names
 zemo cat            # print scratch to stdout
 zemo cat journal    # print ~/memo/topics/journal.md to stdout
+zemo dump           # print scratch and all topics to stdout
 zemo --help
 zemo --version
 ```
