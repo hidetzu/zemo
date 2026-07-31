@@ -13,7 +13,7 @@ jobs:
     name: Create release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
@@ -39,7 +39,7 @@ jobs:
             archive: zip
             bin: zemo.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
