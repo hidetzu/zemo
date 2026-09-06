@@ -33,7 +33,22 @@ third data point for that template, not a confirmation of it.** ⚠ **When the t
 fought to do the right thing in a Zig CLI, that is a finding — say so, and send it upstream
 naming this project** (that repository's README §5).
 
-The feature currently being built is `ideas` — see [`docs/ideas-spec.md`](docs/ideas-spec.md).
+The feature currently being built is `ideas`: a place for a thing that has to be **decided
+about** — kept, ranked, tried, shipped, or dropped — which a topic file cannot record.
+
+⚠ **Phase 1 is exactly these, and nothing beside them**:
+
+```
+zemo ideas:new <name>                          zemo ideas:status   <name> <status>
+zemo ideas:list [--sort=priority|created]      zemo ideas:priority <name> <priority>
+zemo ideas:show <name>
+```
+
+⚠ **What each one does, what the front matter holds, and how a status may move is owned by
+[`docs/ideas-spec.md`](docs/ideas-spec.md)** — ⚠ **never restated here.** ⚠ **The list above is
+an index of what is in scope, not a second copy of the contract.**
+⚠ **Anything not on that list is outside Phase 1**, and widening it is an owner decision
+([`.claude/rules/owner-decisions.md`](.claude/rules/owner-decisions.md)).
 
 ---
 
