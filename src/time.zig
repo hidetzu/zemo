@@ -48,6 +48,24 @@ pub fn formatTimestamp(allocator: std.mem.Allocator, ts: Timestamp) ![]u8 {
     );
 }
 
+/// "YYYY-MM-DD" 形式に整形する。⚠ ideas の `created` は日付だけを持つ
+/// （時刻まで持つと「最終更新」に見えるが、それは git log が答える）。
+/// 戻り値はアロケータ確保。呼び出し側が free すること。
+pub fn formatDate(allocator: std.mem.Allocator, ts: Timestamp) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{d:0>4}-{d:0>2}-{d:0>2}",
+        .{ ts.year, ts.month, ts.day },
+    );
+}
+
+/// 現在ローカル日付を "YYYY-MM-DD" 文字列で返す。
+/// 戻り値はアロケータ確保。呼び出し側が free すること。
+pub fn nowLocalDateString(allocator: std.mem.Allocator) ![]u8 {
+    const ts = try nowLocal();
+    return formatDate(allocator, ts);
+}
+
 /// 現在ローカル時刻を "YYYY-MM-DD HH:MM" 文字列で返す。
 /// 戻り値はアロケータ確保。呼び出し側が free すること。
 pub fn nowLocalString(allocator: std.mem.Allocator) ![]u8 {
@@ -88,4 +106,23 @@ test "nowLocal: returns plausible values" {
     try std.testing.expect(ts.day >= 1 and ts.day <= 31);
     try std.testing.expect(ts.hour <= 23);
     try std.testing.expect(ts.minute <= 59);
+}
+
+test "formatDate: zero-pads and drops the time" {
+    const a = std.testing.allocator;
+    const got = try formatDate(a, .{ .year = 2026, .month = 9, .day = 6, .hour = 14, .minute = 32 });
+    defer a.free(got);
+    try std.testing.expectEqualStrings("2026-09-06", got);
+}
+
+test "formatDate: is the date prefix of formatTimestamp" {
+    const a = std.testing.allocator;
+    const ts: Timestamp = .{ .year = 2026, .month = 12, .day = 31, .hour = 23, .minute = 59 };
+
+    const date = try formatDate(a, ts);
+    defer a.free(date);
+    const full = try formatTimestamp(a, ts);
+    defer a.free(full);
+
+    try std.testing.expectEqualStrings(date, full[0..date.len]);
 }
