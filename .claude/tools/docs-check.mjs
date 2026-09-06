@@ -104,6 +104,24 @@ const CASES = [
         : { ok: true, said: "no count is written into docs/SPEC.md (counts are announced by the runner)" };
     },
   },
+  {
+    name: "version-single-source",
+    // ⚠ Grounds: the version is written in `src/cli.zig` (what `zemo version` prints, and what
+    //   `zemo upgrade` compares against the latest release tag) AND in `build.zig.zon`.
+    //   ⚠ Two copies of one fact, which `CLAUDE.md` §3 forbids keeping unchecked.
+    // ⚠ They had already diverged when this case was written: cli.zig said 0.3.1 and the
+    //   manifest still said 0.1.0, because every release had bumped only one of them.
+    //   ⚠ Nothing announced it — which is exactly why this is a case and not a note.
+    run() {
+      const inCli = /const\s+VERSION\s*=\s*"([^"]+)"/.exec(read("src/cli.zig"));
+      if (!inCli) return { ok: false, said: "src/cli.zig no longer declares VERSION" };
+      const inZon = /^\s*\.version\s*=\s*"([^"]+)"/m.exec(read("build.zig.zon"));
+      if (!inZon) return { ok: false, said: "build.zig.zon no longer declares .version" };
+      return inCli[1] === inZon[1]
+        ? { ok: true, said: `src/cli.zig and build.zig.zon agree on the version (both say ${inCli[1]})` }
+        : { ok: false, said: `src/cli.zig says ${inCli[1]} and build.zig.zon says ${inZon[1]} \u2014 a release would ship one of them wrong` };
+    },
+  },
 ];
 
 // ── the runner ─────────────────────────────────────────────────────────────

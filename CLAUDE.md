@@ -227,4 +227,4 @@ a row with a test is a wall.
 
 | What happened | What to do instead |
 |---|---|
-| — | — |
+| ⚠ **The version was written in two places and quietly diverged.** `src/cli.zig` carried `VERSION` — what `zemo version` prints, and what `zemo upgrade` compares against the latest release tag — and `build.zig.zon` carried `.version`. ⚠ **Every release from `v0.2.0` to `v0.3.1` bumped only the first.** ⚠ **By the `0.4.0` bump the manifest still said `0.1.0`, and nothing had ever announced it** — ⚠ **the build was green the whole time, because nothing read both.** | ⚠ **Bump both, and never rely on remembering to.** ⚠ **The wall is `node .claude/tools/docs-check.mjs --only=version-single-source`**, which reads the value out of each file and fails naming both. ⚠ **Confirmed by reverting the manifest alone and watching it fail with `src/cli.zig says 0.4.0 and build.zig.zon says 0.1.0`.** ⚠ **The rule it instances is §3, which already bound; ⚠ what was missing was the check, and a rule with no check is a promise.** |
