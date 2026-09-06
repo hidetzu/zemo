@@ -146,7 +146,7 @@ const IDEAS_USAGE =
     \\
 ;
 
-const VERSION = "0.3.1";
+const VERSION = "0.4.0";
 
 /// CLI のエントリ。終了コードを返す。
 pub fn run(
