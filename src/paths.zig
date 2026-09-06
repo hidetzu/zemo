@@ -27,6 +27,15 @@ pub fn topicPath(allocator: std.mem.Allocator, dir: []const u8, topic: []const u
     return std.fs.path.join(allocator, &.{ dir, "topics", filename });
 }
 
+/// アイディア用のメモファイルのパスを返す。
+/// ⚠ 名前の検証は呼び出し側が `isValidTopic` で済ませていること
+///   （topic と同じゲートを通す。2つ目のバリデータを作らない）。
+pub fn ideaPath(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
+    const filename = try std.fmt.allocPrint(allocator, "{s}.md", .{name});
+    defer allocator.free(filename);
+    return std.fs.path.join(allocator, &.{ dir, "ideas", filename });
+}
+
 /// 純粋関数: 環境変数の値（取れたか取れなかったか）と OS を入力にして
 /// memo dir を決定する。テストはこっちを叩く。
 pub fn resolveMemoDir(
@@ -135,4 +144,23 @@ test "absolutePath: resolves relative paths from cwd" {
     defer a.free(got);
     try std.testing.expect(std.fs.path.isAbsolute(got));
     try std.testing.expect(std.mem.endsWith(u8, got, std.fs.path.sep_str ++ "relative-memo"));
+}
+
+test "ideaPath: dir/ideas/<name>.md" {
+    const a = std.testing.allocator;
+    const p = try ideaPath(a, "/memo", "zig-lsp-server");
+    defer a.free(p);
+
+    const want = try std.fs.path.join(a, &.{ "/memo", "ideas", "zig-lsp-server.md" });
+    defer a.free(want);
+    try std.testing.expectEqualStrings(want, p);
+}
+
+test "ideaPath: ideas and topics never collide for the same name" {
+    const a = std.testing.allocator;
+    const i = try ideaPath(a, "/memo", "x");
+    defer a.free(i);
+    const t = try topicPath(a, "/memo", "x");
+    defer a.free(t);
+    try std.testing.expect(!std.mem.eql(u8, i, t));
 }

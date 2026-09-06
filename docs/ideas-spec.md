@@ -1,8 +1,8 @@
 # `zemo ideas` — specification
 
-⚠ **This is a specification, not a claim.** ⚠ **Nothing here is implemented yet**, and
-[`SPEC.md`](SPEC.md) §2 says so on the record. ⚠ **A row moves into [`SPEC.md`](SPEC.md) §1 when
-the behaviour exists and a case asserts it** — ⚠ **never when this document changes.**
+⚠ **This is the contract, not the record of what is claimed.**
+⚠ **What may be claimed is [`SPEC.md`](SPEC.md), and a row reaches its §1 only once the
+behaviour exists and a case asserts it** — ⚠ **never because this document says so.**
 
 ⚠ **How to work is [`../CLAUDE.md`](../CLAUDE.md); how to write it is
 [`../.claude/rules/zig.md`](../.claude/rules/zig.md); why the storage looks like this is
@@ -172,11 +172,11 @@ created: 2026-09-06
 
 ```console
 $ zemo ideas:list
-PRI  STATUS         NAME                 EVALUATION
-  1  experimenting  zig-lsp-server       solves my own daily friction; nobody has …
-  2  prioritized    terminal-canvas      the demo landed well; unclear who pays
-  -  backlog        memo-sync-daemon     interesting, no reason to build it yet
-  -  ⚠ unreadable   half-written         no closing `---` in the front matter
+PRI  STATUS         NAME                  EVALUATION
+  1  experimenting  zig-lsp-server        solves my own daily friction; nobody h...
+  2  prioritized    terminal-canvas       the demo landed well; unclear who pays
+  -  backlog        memo-sync-daemon      interesting, no reason to build it yet
+  -  unreadable     half-written          front matter is never closed
 ```
 
 - MUST: ⚠ **Default sort is `--sort=priority`.**
@@ -191,8 +191,16 @@ PRI  STATUS         NAME                 EVALUATION
 - MUST: ⚠ **`<memo>/ideas/` missing or empty prints nothing and exits `0`** —
   ⚠ **the same shape `zemo dump` already has.** ⚠ **Never an error**: having no ideas is not a
   failure.
-- SHOULD: `evaluation` is truncated to fit one line. ⚠ **`ideas:show` is what prints it whole**,
-  and the truncation mark says so.
+- SHOULD: `evaluation` is truncated to fit one line, marked with `...`.
+  ⚠ **`ideas:show` is what prints it whole.**
+  ⚠ **Truncate on a UTF-8 boundary** — ⚠ **an evaluation can be Japanese, and cutting mid-sequence
+  emits bytes no terminal can render.**
+- MUST: ⚠ **The output is ASCII.** ⚠ **The unreadable marker is the word `unreadable` and the
+  truncation mark is `...`** — ⚠ **not `⚠` and not `…`.** ⚠ **Grounds: this ships to a Windows
+  console, and a marker that renders as garbage is worse than a plain word.**
+  ⚠ **The `⚠` in this document is the document's own convention; it is not output.**
+- SHOULD: ⚠ **Do not pad past the last column.** A row whose evaluation is empty ends at the name,
+  with no trailing spaces.
 
 ### 4-3. `zemo ideas:show <name>`
 
@@ -224,7 +232,10 @@ zig-lsp-server: prioritized -> experimenting
   permitted from where it actually is.**
 - MUST: ⚠ **Refuse a file whose front matter could not be parsed, exit `1`** (§3-1).
 - MUST: ⚠ **Setting the status it already has is not an error.** ⚠ **It writes nothing, commits
-  nothing, and says so** — ⚠ **an empty commit is noise in a history the user reads.**
+  nothing, and says so** (`<name>: already <status>`) — ⚠ **an empty commit is noise in a history
+  the user reads.**
+- MUST: ⚠ **A status name §5 does not list exits `2`**, not `1`, and ⚠ **names every status that
+  exists.** ⚠ **The command line was wrong; the idea was not.**
 - MUST: ⚠ **The rewrite replaces one line.** ⚠ **Read the file, write a temporary file in the
   same directory, then rename over it** — ⚠ **a truncate-then-write loses the user's idea if
   anything fails in between.**
@@ -244,7 +255,8 @@ zig-lsp-server: priority 2 -> 1
   ⚠ **Unranked is a value a user can choose**, ⚠ **not only a state a file starts in.**
 - MUST: ⚠ **Print both ends**, and ⚠ **say `unranked`, never `-` or nothing**, when either end
   is absent.
-- MUST: ⚠ **Setting the priority it already has writes nothing and says so** (as §4-4).
+- MUST: ⚠ **Setting the priority it already has writes nothing and says so**
+  (`<name>: already priority <n>`, or `already priority unranked`), as §4-4.
 - MUST: ⚠ **Priority and status are independent.** ⚠ **Ranking an idea does not move it to
   `prioritized`** — ⚠ **that is §5's business, and doing it here would be one command making two
   decisions.**
@@ -419,3 +431,20 @@ then hostile input, then the path a user walks).
 - **External**: §7 again against a real `git` with a local bare remote, ⚠ **asserting the commit
   subjects in §6 are what actually landed** — ⚠ **reading them out of `git log`, not out of our
   own format string.**
+
+---
+
+## 10. ⚠ What the first implementation had to be told
+
+⚠ **These are not predictions.** ⚠ **Each one is something that actually went wrong or was
+actually observed while building this, and each left a case behind.**
+
+- ⚠ **Rewriting a `status:` line dropped the `\r` of a CRLF file**, silently converting the whole
+  line ending. ⚠ **The line's terminator has to be taken from the end of its *content*, not from
+  the index of the `\n`** — the trimmed line no longer carries the `\r`.
+  Case: `rewriteField: a CRLF file stays CRLF`.
+- ⚠ **`git pull --rebase` against an empty remote fails**, so a check whose fixture is a fresh
+  bare repository reports `git pull failed` and asserts nothing.
+  ⚠ **Seed the remote with a commit** ([`../.claude/skills/verify/SKILL.md`](../.claude/skills/verify/SKILL.md)).
+  ⚠ **This is a property of `git`, not of `ideas`** — it is here because it is where a check gets
+  lost, not because `ideas` caused it.

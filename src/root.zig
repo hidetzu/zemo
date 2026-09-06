@@ -9,6 +9,7 @@ pub const git = @import("git.zig");
 pub const time = @import("time.zig");
 pub const cli = @import("cli.zig");
 pub const upgrade = @import("upgrade.zig");
+pub const ideas = @import("ideas.zig");
 
 test {
     std.testing.refAllDecls(@This());

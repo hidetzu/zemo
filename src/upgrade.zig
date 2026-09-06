@@ -425,7 +425,10 @@ extern "kernel32" fn MoveFileExW(
     dwFlags: u32,
 ) callconv(.winapi) std.os.windows.BOOL;
 
-fn moveFileReplaceExistingWindows(
+/// Windows で「既存ファイルを置き換える rename」。
+/// ⚠ `std.Io.Dir.renameAbsolute` は既存の宛先があると失敗するため、こちらを使う。
+/// ⚠ 同じ問いに答える実装を2つ持たないため、`cli.zig` のファイル書き換えもここを呼ぶ。
+pub fn moveFileReplaceExistingWindows(
     allocator: std.mem.Allocator,
     src_wtf8: []const u8,
     dst_wtf8: []const u8,

@@ -15,6 +15,7 @@ Turn any git repository into your terminal notebook.
 - `zemo cat [topic]` — print scratch (or `topics/<topic>.md`) to stdout. Read-only, no git operations.
 - `zemo dump` — print scratch and all topics to stdout with section headers. Read-only, no git operations.
 - `zemo upgrade` — download and install the latest release in-place. `--check` to dry-run.
+- `zemo ideas:*` — keep ideas you have to decide about: rank them, move their status, list them. See [Ideas](#ideas).
 - Auto pull-on-open / commit-on-close when `<memo>/.git` exists.
 - Conventional Commits messages: `docs(<scope>): YYYY-MM-DD HH:MM` for edits, `chore: sync ...` for manual sync.
 - Single static binary on Linux / macOS / Windows.
@@ -113,6 +114,82 @@ zemo --version
 ```
 
 Topic names must match `[a-zA-Z0-9_-]` (slashes, dots, spaces, and multibyte characters are rejected to avoid path traversal).
+
+## Ideas
+
+A topic is a place to write. An idea is a thing you have to decide about — keep it, rank it, try it, ship it, or drop it — and a topic file cannot record which of those happened. `zemo ideas:*` gives that decision a place, in the same repository, synced by the same `git` calls.
+
+Ideas live in `<memo>/ideas/<name>.md`. The directory is flat: the status is a line in the file's front matter and nowhere else, so nothing can drift out of sync with a directory name.
+
+```sh
+zemo ideas:new zig-lsp-server        # create it and open the editor
+zemo ideas:priority zig-lsp-server 2 # 1-5, 1 is highest ('-' to unrank)
+zemo ideas:status zig-lsp-server prioritized
+zemo ideas:list                      # ranked first; --sort=created for newest first
+zemo ideas:show zig-lsp-server       # print it, front matter included
+```
+
+```console
+$ zemo ideas:list
+PRI  STATUS         NAME                  EVALUATION
+  1  experimenting  zig-lsp-server        solves my own daily friction
+  2  prioritized    terminal-canvas       the demo landed well; unclear who pays
+  -  backlog        memo-sync-daemon      interesting, no reason to build it yet
+```
+
+### Front matter
+
+`zemo ideas:new` writes the keys for you; fill in what you want and leave the rest empty.
+
+```markdown
+---
+status: prioritized
+priority: 2
+evaluation: solves my own daily friction; nobody has shipped a good one for Zig
+tags: zig, lsp, editor
+repo: hidetzu/zig-lsp-server
+created: 2026-09-06
+---
+
+# zig-lsp-server
+```
+
+Only these keys are read. Anything else you write in the block is kept exactly as you wrote it — `zemo ideas:status` and `zemo ideas:priority` replace one line and touch nothing else. An empty `priority` means "not ranked yet", which is not the same as ranking it `5`.
+
+`tags` is a comma-separated string rather than a YAML list, so that `zemo` needs no YAML parser and stays dependency-free.
+
+### Status
+
+```text
+   backlog <-> prioritized <-> experimenting --> published
+       |            |               |
+       +------------+---------------+---------> dropped
+```
+
+Forward and backward one step at a time. `published` and `dropped` are the end, and nothing leaves them — an idea that comes back is a new file, and the old one stays as the record of what was decided. `dropped` is deliberately not the same as `backlog`: one means you decided against it, the other means nobody has looked yet.
+
+A move that is not on that graph is refused, and the refusal names what *is* reachable:
+
+```console
+$ zemo ideas:status zig-lsp-server published
+zemo: zig-lsp-server is prioritized; from there it can go to backlog, experimenting or dropped
+```
+
+An idea whose front matter cannot be read is still listed, marked `unreadable` with the reason — and `ideas:status` and `ideas:priority` refuse to write to it, rather than rewriting a file they misread.
+
+### Git
+
+`ideas:list` and `ideas:show` are read-only and run no git command. The other three pull first and commit afterwards, with the idea and the change in the subject:
+
+```text
+docs(ideas): zig-lsp-server 2026-09-06 14:32
+docs(ideas): zig-lsp-server prioritized -> experimenting
+docs(ideas): zig-lsp-server priority 2 -> 1
+```
+
+So `git log --oneline -- ideas/<name>.md` reads back as the history of the deciding. Setting a value it already has writes nothing and commits nothing.
+
+Full specification: [`docs/ideas-spec.md`](docs/ideas-spec.md). Why the status is not a directory: [`docs/adr/0001-an-ideas-status-lives-only-in-its-front-matter.md`](docs/adr/0001-an-ideas-status-lives-only-in-its-front-matter.md).
 
 ## Configuration
 

@@ -92,7 +92,25 @@ printf 'not a topic\n'       > "$ZEMO_DIR/topics/ignore.txt"
 "$BIN" cat alpha   # expect: the file, byte for byte
 "$BIN" dump        # expect: scratch and every topic, with headers
 "$BIN" cat nope; echo "exit=$?"    # expect: exit 1 and a sentence on stderr
+
+export ZEMO_EDITOR=true            # non-interactive, see below
+"$BIN" ideas:new zig-lsp-server            # expect: the template, status backlog
+"$BIN" ideas:priority zig-lsp-server 2     # expect: priority unranked -> 2
+"$BIN" ideas:status   zig-lsp-server prioritized
+"$BIN" ideas:status   zig-lsp-server published; echo "exit=$?"
+                                   # expect: exit 1, naming what IS reachable
+"$BIN" ideas:status   zig-lsp-server experimenting
+"$BIN" ideas:status   zig-lsp-server experimenting
+                                   # expect: "already experimenting", exit 0, nothing written
+printf 'no front matter\n' > "$ZEMO_DIR/ideas/broken.md"
+"$BIN" ideas:status broken prioritized; echo "exit=$?"
+                                   # expect: exit 1, and ⚠ broken.md unchanged (fail closed)
+"$BIN" ideas:list                  # expect: ranked first, and broken still listed as unreadable
+"$BIN" ideas:list --sort=name; echo "exit=$?"    # expect: exit 2, never the default order
 ```
+
+⚠ **After the `fail closed` case, read `broken.md` back.** ⚠ **An exit code of `1` is not
+evidence that nothing was written** — ⚠ **the claim is about the file, so look at the file.**
 
 ⚠ **Confirm the binary under test is the one just built** (contract). ⚠ **`zig-out/bin/zemo`
 from a previous optimize mode looks identical and is not.** ⚠ **`zig build` first, in the same
@@ -114,20 +132,43 @@ of a check.**
 ⚠ **This is the tier that gets skipped.** ⚠ **Run it whenever anything under `src/git.zig`, or
 anything that calls it, changed.**
 
+⚠ **Seed the remote with a commit first.** ⚠ **`zemo` pulls before it writes, and
+`git pull --rebase` against an *empty* remote fails with "no such ref was fetched"** —
+⚠ **which is a broken fixture, not a finding about zemo.** ⚠ **Observed on 2026-09-06 while
+writing this file: the whole external run reported `git pull failed` and asserted nothing.**
+
 ```sh
 WORK="$(mktemp -d)"
 git init --bare "$WORK/remote.git"
 git clone "$WORK/remote.git" "$WORK/memo"
-git -C "$WORK/memo" config user.email zemo@example.invalid
-git -C "$WORK/memo" config user.name  zemo-verify
-export ZEMO_DIR="$WORK/memo"
+cd "$WORK/memo"
+git config user.email zemo@example.invalid
+git config user.name  zemo-verify
+git commit --allow-empty -m "chore: init" && git push -u origin HEAD   # ⚠ the seed
+cd -
+export ZEMO_DIR="$WORK/memo" ZEMO_EDITOR=true
+BIN="$PWD/zig-out/bin/zemo"
 
 printf 'first\n' > "$ZEMO_DIR/scratch.txt"
-"$PWD/zig-out/bin/zemo" sync
+"$BIN" sync
 
 git -C "$WORK/memo" log --oneline          # expect one `chore: sync YYYY-MM-DD HH:MM`
 git --git-dir="$WORK/remote.git" log --oneline   # expect the same commit arrived
-"$PWD/zig-out/bin/zemo" sync               # expect: nothing to commit, and no error
+"$BIN" sync                                # expect: nothing to commit, and no error
+
+# ideas — ⚠ read the subjects out of git log, never out of our own format string
+"$BIN" ideas:new zig-lsp-server
+"$BIN" ideas:priority zig-lsp-server 2
+"$BIN" ideas:status   zig-lsp-server prioritized
+git -C "$WORK/memo" log --oneline -- ideas/zig-lsp-server.md
+#   expect, newest first:
+#     docs(ideas): zig-lsp-server backlog -> prioritized
+#     docs(ideas): zig-lsp-server priority unranked -> 2
+#     docs(ideas): zig-lsp-server YYYY-MM-DD HH:MM
+
+before=$(git -C "$WORK/memo" rev-parse HEAD)
+"$BIN" ideas:status zig-lsp-server prioritized      # the status it already has
+test "$before" = "$(git -C "$WORK/memo" rev-parse HEAD)"   # ⚠ expect: no new commit
 ```
 
 - ⚠ **Depend on nobody's uptime** (contract). ⚠ **The remote is a local bare repo, never a host.**
