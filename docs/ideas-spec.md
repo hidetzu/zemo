@@ -427,7 +427,7 @@ then hostile input, then the path a user walks).
   ([`../.claude/rules/zig.md`](../.claude/rules/zig.md)).
 - **Sorting**: unranked ideas after ranked ones, ⚠ **and the tie-break, so the order is stable.**
 - **Final gate**: the built binary against a throwaway `ZEMO_DIR`, walking §7 end to end.
-  ⚠ **Never the real memo directory** ([`../CLAUDE.md`](../CLAUDE.md) §2).
+  ⚠ **Never the real memo directory** ([`../.claude/skills/verify/SKILL.md`](../.claude/skills/verify/SKILL.md) § 2).
 - **External**: §7 again against a real `git` with a local bare remote, ⚠ **asserting the commit
   subjects in §6 are what actually landed** — ⚠ **reading them out of `git log`, not out of our
   own format string.**

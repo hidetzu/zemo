@@ -118,3 +118,70 @@ of autonomy; it is evidence that nobody looked.**
   ⚠ **Labels get applied by mistake — ⚠ including by the AI.**
 - MUST: ⚠ **The Loop Controller re-runs the gate before touching anything, and stops on `NO`**
   ([`../skills/loop-controller/SKILL.md`](../skills/loop-controller/SKILL.md)).
+
+## ⚠ Rewriting an issue
+
+⚠ **The AI may rewrite an issue body.** ⚠ **Closing it stays with the human** (above).
+⚠ **The label follows the section above.**
+
+⚠ **Rewrite only what you measured.**
+
+| May | ⚠ May not |
+|---|---|
+| Add the date and the PR to a finished item | ⚠ Change `Goal` / `Scope` / `Out of Scope` / `Owner Decisions` |
+| Append a correction to a statement that is no longer true | ⚠ Delete or rewrite the original words |
+| Note that a reference is gone | ⚠ Fix by guesswork (⚠ if you have not measured it, leave it) |
+| Tick a box (⚠ only when measured) | ⚠ Close it |
+
+⚠ **Never delete. Append.** ⚠ **Deleting the original words loses why they were written.**
+
+⚠ **Not because it is old — because it is no longer true.**
+⚠ **Time is not a reason to touch an issue.**
+
+⚠ **What we stepped on**: ⚠ **we first reached for a periodic review — look over the issues
+every N days.** ⚠ **The practice around auto-closing stale issues argues against it:
+closing on time alone throws away context, silence is not low value, and it hides the triage
+problem rather than solving it.** ⚠ **Review by time, and you gain a reason to touch the
+issues that are still correct.**
+
+### ⚠ Collect the appends under `## Updates`
+
+⚠ **The body is the record of the time it was written.** ⚠ **`Updates` is the diff against now.**
+
+```text
+## Updates
+
+### <date> — <state>        ⚠ partly solved / solved / the fact changed / the reference is gone
+
+<what you confirmed>        ⚠ with the PR. ⚠ with the numbers when you measured
+
+The body's "<the passage>" stays as the record of when it was written.
+⚠ But as of now, <the fact>.
+
+Unresolved:
+- <what is left>
+```
+
+- MUST: ⚠ **Newest on top** (⚠ so the current fact reads first).
+- MUST: ⚠ **Name the passage in the body.** ⚠ **Without it a reader trusts the body**
+  (⚠ they cannot tell which part is stale).
+- MUST: ⚠ **Keep the unresolved list.** ⚠ **A half-solved issue is not a solved one.**
+
+⚠ **Without this, a long-lived issue collects corrections until the current fact is unreadable again.**
+
+### ⚠ When to look
+
+⚠ **Not on a clock.** ⚠ **At the seams of the work.**
+
+```text
+issue-ready     ⚠ the one issue you are about to take on (§4-2 there)
+change-review   ⚠ the issue this PR touches, when a partial fix cannot carry `Closes`
+```
+
+⚠ **The other open issues are not looked at.**
+⚠ **An issue nobody reads does no harm by being stale.** ⚠ **The harm is believing it while reading.**
+⚠ **Looking at all of them turns a periodic review into a review pinned to a seam — the same thing.**
+
+⚠ **This leaves a hole, and it is left open on purpose**: ⚠ **an issue that never reaches
+`issue-ready` is never looked at.** ⚠ **Nothing reads the body until someone picks the issue
+up.** ⚠ **No mechanism fills that.**

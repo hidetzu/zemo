@@ -163,6 +163,32 @@ and it can differ between a developer's machine and a hosted runner.
 
 ---
 
+## 4-2. ⚠ Is the body still true?
+
+⚠ **The label is an entry condition, not a guarantee**
+([`owner-decisions.md`](../../rules/owner-decisions.md)). ⚠ **Bodies go stale after a label is applied.**
+
+⚠ **What we stepped on**: ⚠ **a body still described a problem that had been fixed a month earlier.**
+⚠ **A partial fix could not carry `Closes`, so the issue stayed open and the wording was left behind.**
+⚠ **The next reader nearly believed it.**
+
+⚠ **Look at that one issue only.** ⚠ **Not the other open ones**
+(⚠ the reasoning is in [`owner-decisions.md`](../../rules/owner-decisions.md)).
+
+| Where | ⚠ What fails |
+|---|---|
+| ⚠ **What the body calls the present** | ⚠ **It is already fixed** (⚠ confirm in the code, the checks, the PR) |
+| ⚠ **Checkboxes** | ⚠ **A finished item still shows `[ ]`** |
+| ⚠ **References** | ⚠ The issue it points at is closed, ⚠ or a file or an ADR is gone |
+| ⚠ **Measured values** | ⚠ Measured long ago, ⚠ and the number has moved |
+
+⚠ **When it has drifted, write it under `## Updates`** (⚠ the format lives in
+[`owner-decisions.md`](../../rules/owner-decisions.md)).
+⚠ **Do not delete the body.** ⚠ **Fix it before you return the verdict** —
+⚠ **never return `YES` on a stale body.**
+
+---
+
 ## 5. Return the verdict
 
 ```

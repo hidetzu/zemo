@@ -9,6 +9,30 @@ lives in [`.claude/rules/`](.claude/rules/).
 ⚠ **Never duplicate.** ⚠ **Written in two places, one of them goes stale.**
 When the spec changes, fix the spec. Do not restate it here.
 
+### ⚠ A section that points owns nothing
+
+⚠ **Several sections below own no rule: they name the file that does.**
+⚠ **A pointer section carries the pointer and nothing else** — ⚠ **no summary, no excerpt,
+no "the gist is".** ⚠ **Naming the subjects the file covers is fine; ⚠ stating any of its rules
+is not.**
+
+⚠ **Grounds: the body moves and the summary does not.** ⚠ **So the summary is where the stale
+copy lives** — ⚠ **and it sits directly under the words "not here", which is the one place a
+reader will not think to doubt.**
+⚠ **Stepped on where this template came from**: ⚠ **on the day that project moved its rules out,
+7 of its 9 pointer sections had grown 16 lines of summary**, ⚠ **one of them a verbatim copy of
+the evidence rules.**
+
+⚠ **Never delete a heading here, and never renumber one.**
+⚠ **Records already cite these rules by section number** — ADRs, issues, code comments, the
+text a check prints — ⚠ **and the number is the address.**
+⚠ **Measured in that same project: its two most-cited sections were cited 114 and 94 times.**
+⚠ **Rewriting those citations rewrites records of what was known at the time.**
+⚠ **So a rule moves out and the heading stays, holding one line that says where it went.**
+
+⚠ **Make it a wall, not a note**: ⚠ **a check that reads this file and fails when a pointer
+section grows a second line.** ⚠ **The rule alone is only a promise.**
+
 Before starting work, read [`.claude/rules/README.md`](.claude/rules/README.md).
 
 ⚠ **`⚠` marks "it hurts if you step on it".** ⚠ It is not decoration.
@@ -75,10 +99,6 @@ in the code, in the tests, and in every report.
 ⚠ **The contract is [`.claude/rules/verification.md`](.claude/rules/verification.md).**
 ⚠ **What to actually run is [`.claude/skills/verify/SKILL.md`](.claude/skills/verify/SKILL.md).**
 ⚠ Neither belongs here (never two copies).
-
-⚠ **One line does need saying twice, because forgetting it costs someone their notes:**
-⚠ **no check ever points at the real memo directory.** ⚠ **`ZEMO_DIR` names a throwaway, every
-time.** The rest is in the skill.
 
 ---
 
@@ -174,9 +194,6 @@ is a lie the user reads at the moment they need help.
 ## 6. How to write numbers
 
 ⚠ **Owned by [`.claude/rules/evidence.md`](.claude/rules/evidence.md).** ⚠ Not here.
-
-⚠ **`zig build test --summary all` announces the count.** ⚠ **Copy that number; never write one
-into a document.**
 
 ---
 
