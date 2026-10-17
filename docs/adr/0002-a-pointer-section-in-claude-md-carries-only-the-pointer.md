@@ -24,7 +24,7 @@ because forgetting it costs someone their notes." That was a deliberate duplicat
 
 ## Why
 
-- ⚠ **The rule came from `claude-dev-template` (upstream #7)**, adopted into `CLAUDE.md` in the
+- ⚠ **The rule came from `hidetzu/claude-dev-template#7`**, adopted into `CLAUDE.md` in the
   same change: ⚠ **a pointer section carries the pointer and nothing else**, because the body
   moves and the summary does not, ⚠ **and the stale copy then sits under the words "not here".**
 - ⚠ **An exception is a second copy with a reason attached.** The reason does not stop the
