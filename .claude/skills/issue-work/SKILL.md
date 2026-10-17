@@ -83,7 +83,7 @@ Two obligations belong to this stage:
 
 ⚠ **What to look at is in [`change-review`](../change-review/SKILL.md).** ⚠ Not here.
 
-`change-review` holds: scope (AC, Out of Scope, one PR one reason) / the rules /
+`change-review` holds: ⚠ who reads it (a fresh context) / scope (AC, Out of Scope, one PR one reason) / the rules /
 ⚠ **stale results and ordering** / tidy-up (dead code, ⚠ stale comments) /
 `PASS` `NEEDS-FIX` `HUMAN-DECISION`.
 
@@ -99,6 +99,8 @@ never the default branch, why and the numbers in the body. ⚠ Not here.
 - ⚠ **Take permission for `git push` every time** ([`git.md`](../../rules/git.md)).
   ⚠ **Permission granted before does not carry forward**
 - Include `Closes #<N>`
+- ⚠ **The body carries what [`loop-controller`](../loop-controller/SKILL.md) § 6 names** —
+  Testing, Risk, How to revert, and the answer to every review finding. ⚠ Not restated here
 - ⚠ **Note which checks did not run on this PR**, and watch the run on the default branch after merge
 
 ## 10. Report

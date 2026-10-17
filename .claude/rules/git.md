@@ -25,6 +25,10 @@
     enters, and permission for it is taken every single time.**
     ⚠ **Auto-merge (`--auto`), merge queues, and merges that bypass protection (`--admin`) are
     forbidden outright.** ⚠ **Never merge on red or in-progress CI.**
+  - ⚠ **Permission to merge covers the commit the owner was shown, and nothing after it.**
+    ⚠ **Grounds: the owner approved what they read.** ⚠ **A commit pushed after the question — a
+    fix, a rebase, a merged-in default branch, a hand-resolved conflict — is something they did
+    not read.** ⚠ **Any new commit voids the permission; ask again.**
   - ⚠ **Used standalone, every skill still takes permission every time.** Nothing is weakened.
 
 ## ⚠ Never do these without being told

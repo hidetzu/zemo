@@ -188,7 +188,7 @@ inner verify (the fast tier)
    | PASS
 final verify (the final gate)
    | PASS
-review (change-review)
+review (change-review, ⚠ in a fresh context — its § 0)
    | PASS
 PR
 ```
@@ -201,7 +201,7 @@ PR
 | Verify `FAIL` | ⚠ **If fixable within scope**, back to implement. **Counts as one round** |
 | Verify `NOT-VERIFIED` | ⚠ **Stop by default.** Only when an external cause makes a retry sensible, **retry once under the same conditions**. Then stop. ⚠ **Never edit code to make it go away** |
 | Review `PASS` | Continue |
-| Review `NEEDS-FIX` | ⚠ **Only the in-scope findings**, then back to implement. **Counts as one round** |
+| Review `NEEDS-FIX` | ⚠ **Only the in-scope findings**, then back to implement. **Counts as one round.** ⚠ **The re-review reads the delta** (`change-review` § 1) |
 | Review `HUMAN-DECISION` | ⚠ **Stop immediately.** The controller does not decide |
 
 ⚠ **After a fix, run inner -> final -> review again.** Never skip.
@@ -230,6 +230,7 @@ confirming it was honoured. ⚠ Operate knowing that.
 [ ] Required review = PASS
 [ ] Unresolved human decisions = 0
 [ ] Round limit not exceeded
+[ ] ⚠ Every review finding answered        ⚠ Non-blocking and Pre-existing too (change-review § 6)
 ```
 
 ⚠ **`Owner approval` is not on this list.** ⚠ **It moved to § 7, in front of the merge.**
@@ -240,6 +241,23 @@ Include `Closes #<N>`, and make it visible that the controller ran it.
 Loop Controller: Quality PASS / Verify PASS / Review PASS / round 2 of 3 / no decisions pending
 ⚠ ready-for-ai: applied by the AI on <date> / applied by the owner   ⚠ say which
 ⚠ Merge: awaiting owner approval
+```
+
+⚠ **The PR body also carries what the owner needs to judge the merge**, ⚠ **and the answer to
+every review finding**.
+⚠ **Grounds: the merge is the gate because it is the point that cannot be walked back**
+([`owner-decisions.md`](../../rules/owner-decisions.md)). ⚠ **An owner not shown how far it can
+be walked back, or what would be left behind, is judging the one thing the gate is for blind.**
+
+```
+## Testing
+<what ran, which tier>  ⚠ and what did not
+## Risk
+<what this could break>  ⚠ and what the checks above would not catch
+## How to revert
+<the one step that undoes it>  ⚠ and what that step does not undo (data written, a message sent)
+## Findings
+- <class> — Fixed in <commit> / Declined: <reason> / Pre-existing: <file:line>, <how it was shown>, left as found
 ```
 
 ---
@@ -264,7 +282,9 @@ something that may still fail.**
 
 ```
 what the change does, in one line
+⚠ the head SHA being approved (git.md)
 ⚠ which tiers ran, and ⚠ which did not (⚠ a silent gap reads as "checked and fine")
+⚠ how to revert it, ⚠ and what reverting does not undo
 ⚠ who applied ready-for-ai, and when
 ⚠ anything the run decided that the owner might have decided differently
 ```
@@ -275,9 +295,10 @@ what the change does, in one line
 ### ⚠ Merge only when all of these hold
 
 ```
-[ ] the five items in §6
+[ ] every item in §6
 [ ] CI is entirely green (not one pending)
 [ ] ⚠ the owner approved this merge, in this run
+[ ] ⚠ the PR head is still the SHA the owner approved
 ```
 
 ⚠ **On a failure, split it apart first** ([`verification.md`](../../rules/verification.md)).
@@ -293,8 +314,11 @@ what the change does, in one line
 ### merge
 
 ```bash
-gh pr merge <PR> --squash --delete-branch
+gh pr merge <PR> --squash --delete-branch --match-head-commit <approved SHA>
 ```
+
+⚠ **`--match-head-commit` is what makes the SHA a wall, not a note**: ⚠ **the host refuses the
+merge if the head moved after the owner was asked.**
 
 ⚠ Then re-fetch the default branch and ⚠ **confirm the issue actually closed**
 (that `Closes` took effect).

@@ -49,6 +49,24 @@
 - MUST: ⚠ **When something else could be holding the port, the socket, the device or the lock,
   confirm which one is being measured** before believing the result.
 
+### ⚠ A check that reads the index keeps passing after the rule moves out
+
+⚠ **Where a rule has an index entry and an owning file, a check that greps the index is
+measuring the pointer, not the rule.** ⚠ **Move the rule out and the check stays green** —
+⚠ **the pointer line still carries the words it greps for.**
+
+⚠ **Stepped on where this template came from**: ⚠ **a check asserted "the label's meaning is
+written down" by grepping the index file for the label's name.** ⚠ **The rule moved to its own
+file; ⚠ the pointer that replaced it still said the label's name; ⚠ the check stayed green while
+measuring nothing.**
+
+- MUST: ⚠ **Point the check at the owning file**, ⚠ **not at whatever file happens to mention
+  the subject.**
+- MUST: ⚠ **Require enough of the rule that deleting the rule fails the check** —
+  ⚠ **not merely that the subject is mentioned somewhere.**
+- MUST: ⚠ **Fail when the pattern matches nothing at all.** ⚠ **Zero matches and zero problems
+  are indistinguishable in the output**, ⚠ **so a format change silently turns the check off.**
+
 ## ⚠ An exercise must not change the world
 
 ⚠ **Grounds: a run that believes it is a rehearsal, and is not, does real damage while reporting

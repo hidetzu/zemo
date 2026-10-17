@@ -16,6 +16,26 @@ What this looks at is **whether the change itself sits inside what was asked and
 
 ---
 
+## 0. ⚠ Read it in a fresh context
+
+⚠ **The context that wrote the change does not review it.**
+⚠ **Run this skill in a context that has not seen the implementation** — a subagent, given what
+an outside reader would have, ⚠ **and not the plan, the reasoning, or the conversation that
+produced the change.**
+
+⚠ **Grounds: a check that agrees only with itself has proved nothing**
+([`verification.md`](../../rules/verification.md)). ⚠ **The context that wrote it reads what it
+meant, not what it wrote.**
+
+- MUST: ⚠ **Hand over the issue (body and comments) and the branch** — ⚠ **and, on a re-review,
+  the previous return verbatim and the answer to each of its findings** (§ 1, § 6).
+  ⚠ **Nothing else.** ⚠ **Never a summary of the change** — ⚠ the reviewer reads `git diff`
+  itself (above).
+- MUST: ⚠ **When a fresh context cannot be had, say so in the return** (`Reviewed in`, § 6).
+  ⚠ **A silent gap reads as "checked and fine".**
+
+---
+
 ## 1. What to read
 
 ```bash
@@ -25,6 +45,30 @@ git log --oneline <default>..HEAD  # is it split by reason
 ```
 
 ⚠ **Never judge from `--stat` alone.** Read the contents.
+
+### ⚠ A re-review reads what moved since the last one
+
+⚠ **The first review reads the whole change.** ⚠ **A re-review after `NEEDS-FIX` reads the delta.**
+
+```bash
+git diff <reviewed-at>..HEAD       # <reviewed-at> is the previous return's `Reviewed at`
+```
+
+⚠ **Grounds: re-reading the whole change finds what the last pass happened to miss, ⚠ not what
+the fix broke.** ⚠ **Each pass then turns up a little more of what was always there, and the loop
+does not converge.**
+
+- MUST: ⚠ **A finding the previous return carried is carried forward, not raised as new.**
+  ⚠ **It stays in the return, marked `(carried from <SHA>)`, until it is closed.**
+  ⚠ **`Fixed` closes it only when the delta shows the fix**; ⚠ **an answer claiming a fix is not
+  the fix.** ⚠ **`Declined` and `Pre-existing` close it on the answer** (§ 6).
+  ⚠ **A carried `Blocking` finding that is not closed still blocks.**
+- MUST: ⚠ **A carried finding still open after a fix round is the same finding repeating**
+  (`loop-controller` § 5 stops on it).
+- MUST: ⚠ **When the delta reaches a file the previous review did not read, read that file whole.**
+- MUST: ⚠ **When `<reviewed-at>` is not an ancestor of `HEAD`** (a rebase), ⚠ **or the default
+  branch was merged in since**, ⚠ **the delta is not this change's alone: read the whole change
+  again.**
 
 ---
 
@@ -105,6 +149,7 @@ implementation calls. ⚠ **Only judge whether it is handled.** If it is not, `N
 | **Changes with no effect** | Written, but nothing changes (⚠ confirm by measuring) |
 | **Fixed as a set** | implementation -> check -> comment -> README -> `docs/SPEC.md` |
 | **Bare issue numbers** | ⚠ Write them with the repository name (a bare number points elsewhere after a migration) |
+| ⚠ **A stale issue body** | ⚠ **A partial fix left the issue body untrue** (⚠ when `Closes` cannot be carried). ⚠ **Look only at the issue this PR touches.** ⚠ **Write it under `## Updates`** ([`owner-decisions.md`](../../rules/owner-decisions.md)) |
 
 ⚠ **Never write "confirmed" for something that was not verified.**
 
@@ -115,6 +160,13 @@ implementation calls. ⚠ **Only judge whether it is handled.** If it is not, `N
 ```
 Verdict: PASS / NEEDS-FIX / HUMAN-DECISION
 
+Reviewed at:
+  <head SHA>                         ⚠ the commit this verdict is about
+Reviewed in:
+  fresh context / ⚠ same context (<why a fresh one could not be had>)
+Read:
+  whole change / ⚠ delta since <SHA>
+
 Scope:
   N files changed / M reasons        ⚠ only what was actually read
 
@@ -122,20 +174,67 @@ Acceptance Criteria:
   1. <AC>  -> <what confirmed it>  OK / NO / ⚠ unverified
 
 Blocking:
-  - <breaks a rule / outside scope / an AC unmet / ⚠ a stale result can overwrite current state>
+  - <the class> — <every instance, file:line>
+    <breaks a rule / outside scope / an AC unmet / ⚠ a stale result can overwrite current state>
 
 Non-blocking:
-  - <worth fixing, not worth blocking on>
+  - <the class> — <every instance>   worth fixing, not worth blocking on
+
+Pre-existing:
+  - <the class> — <file:line> — <how it was shown to predate this change>   ⚠ never blocks
 
 Human Decision:
-  - <spec, behaviour, meaning of a recorded value>
+  - <spec, behaviour, meaning of a recorded value / ⚠ a Blocking finding answered Declined>
 ```
 
 | Verdict | When |
 |---|---|
 | **PASS** | Every AC met, nothing outside scope, no rule touched |
 | **NEEDS-FIX** | ⚠ **Any AC unmet** / outside scope / a rule touched / ⚠ **a stale result can overwrite** / tidy-up outstanding |
-| **HUMAN-DECISION** | ⚠ **The spec, the behaviour, or the meaning of a value** must be settled first. ⚠ **Never settle it yourself** |
+| **HUMAN-DECISION** | ⚠ **The spec, the behaviour, or the meaning of a value** must be settled first, ⚠ **or a `Blocking` finding was answered `Declined`**. ⚠ **Never settle it yourself** |
 
 ⚠ **One blocking item means it is not a PASS.**
 ⚠ **One "unverified" AC means it is not a PASS** (either `NEEDS-FIX`, or back to verifying to measure).
+
+### ⚠ Every finding says whether this change introduced it
+
+⚠ **Grounds: a defect the change did not introduce cannot be fixed inside its scope.**
+⚠ **Blaming the change for it either pushes the fix past `Non-goals` or spends a round on it,
+⚠ and the next pass finds the next old one.**
+
+- MUST: ⚠ **`Pre-existing` only when shown** — ⚠ **the same code is on the default branch**
+  (`git show <default>:<path>`, `git blame`). ⚠ **Say how it was shown.**
+- MUST: ⚠ **Not shown is `Blocking` or `Non-blocking`, never `Pre-existing`.**
+  ⚠ **Failing to show it predates the change is not showing that it does**
+  ([`evidence.md`](../../rules/evidence.md)).
+- MUST: ⚠ **A pre-existing defect that this change makes reachable, or worse, is this change's.**
+- MUST NOT: ⚠ **`Pre-existing` never makes a `NEEDS-FIX`.** ⚠ **It is listed so it is not lost**;
+  ⚠ **whether it becomes its own issue is not this skill's to decide.**
+
+### ⚠ Name the class, not the instance
+
+- MUST: ⚠ **A finding names the class of defect, and every instance of it in what was read.**
+  ⚠ **Grounds: a finding raised one instance at a time gets fixed one instance at a time, ⚠ and
+  the next round finds the next instance.**
+- MUST: ⚠ **When the instances could not all be looked for, say where the search stopped.**
+
+### ⚠ Every finding gets an answer
+
+⚠ **Grounds: a finding dropped without a word is indistinguishable from one never raised** —
+⚠ **the same hole as a silent rejection** ([`evidence.md`](../../rules/evidence.md)).
+
+⚠ **The reviewer raises it. ⚠ Whoever made the change answers it**, with exactly one of:
+
+| Answer | ⚠ What it carries |
+|---|---|
+| **Fixed** | ⚠ **The commit that fixed it** |
+| **Declined** | ⚠ **A reason someone could disagree with.** ⚠ "Not needed" is not a reason |
+| **Pre-existing** | ⚠ **Only for a finding the review already marked `Pre-existing`**, with how it was shown. ⚠ **Left as found**, and listed where the owner will read it |
+
+- MUST: ⚠ **`Non-blocking` findings are answered too.** ⚠ **Not blocking is not the same as not
+  answered.**
+- MUST: ⚠ **A `Blocking` finding answered `Declined` makes the verdict `HUMAN-DECISION`.**
+  ⚠ **Whoever made the change does not overrule the review on what blocks**; ⚠ **the owner does.**
+- MUST NOT: ⚠ **Whoever made the change never re-labels a finding `Pre-existing`.**
+  ⚠ **That label needs the showing above, and the reviewer gives it.**
+- MUST: ⚠ **The answers go where the owner reads them** — ⚠ **the PR body, when there is one.**
