@@ -100,10 +100,6 @@ in the code, in the tests, and in every report.
 ⚠ **What to actually run is [`.claude/skills/verify/SKILL.md`](.claude/skills/verify/SKILL.md).**
 ⚠ Neither belongs here (never two copies).
 
-⚠ **One line does need saying twice, because forgetting it costs someone their notes:**
-⚠ **no check ever points at the real memo directory.** ⚠ **`ZEMO_DIR` names a throwaway, every
-time.** The rest is in the skill.
-
 ---
 
 ## 3. Architecture boundaries
@@ -198,9 +194,6 @@ is a lie the user reads at the moment they need help.
 ## 6. How to write numbers
 
 ⚠ **Owned by [`.claude/rules/evidence.md`](.claude/rules/evidence.md).** ⚠ Not here.
-
-⚠ **`zig build test --summary all` announces the count.** ⚠ **Copy that number; never write one
-into a document.**
 
 ---
 
