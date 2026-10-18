@@ -576,6 +576,23 @@ pub const UpgradeFailure = union(enum) {
 const ISSUES_URL = "https://github.com/hidetzu/zemo/issues";
 const RELEASES_URL = "https://github.com/hidetzu/zemo/releases/latest";
 
+const LOCAL_CERTIFICATES_HINT =
+    "      Check the system certificate store (for example the ca-certificates package)\n";
+const LOCAL_CERTIFICATES_CHECK =
+    "zemo: could not load this machine's CA certificates, so api.github.com could not be verified.\n" ++
+    LOCAL_CERTIFICATES_HINT ++ "      and try again.\n";
+const LOCAL_CERTIFICATES_DOWNLOAD =
+    "zemo: could not load this machine's CA certificates, so github.com could not be verified.\n" ++
+    LOCAL_CERTIFICATES_HINT ++ "      and try again. The installed zemo is unchanged.\n";
+
+/// `zemo: GitHub answered HTTP 400 (bad_request)` まで書く。
+/// ⚠ `std.http.Status` は非網羅 enum。名前の無い値 (599 など) に `@tagName` を当てるとパニックする。
+///   名前が無ければ数字だけを書く。
+fn writeHttpStatus(w: *Io.Writer, status: std.http.Status) !void {
+    try w.print("zemo: GitHub answered HTTP {d}", .{@backingInt(status)});
+    if (std.enums.tagName(std.http.Status, status)) |name| try w.print(" ({s})", .{name});
+}
+
 /// ⚠ 置き換える前に止まったときは「今の zemo はそのまま」と言う。言えるのはその場合だけ。
 fn reportUpgradeFailure(stderr: *Io.Writer, failure: UpgradeFailure) !u8 {
     switch (failure) {
@@ -584,11 +601,11 @@ fn reportUpgradeFailure(stderr: *Io.Writer, failure: UpgradeFailure) !u8 {
                 "zemo: could not reach api.github.com to check the latest release.\n" ++
                     "      Check the network connection and try again.\n",
             ),
-            .http_status => |status| try stderr.print(
-                "zemo: GitHub answered HTTP {d} ({s}) when asked for the latest release.\n" ++
-                    "      Try again later.\n",
-                .{ @backingInt(status), @tagName(status) },
-            ),
+            .local_certificates => try stderr.writeAll(LOCAL_CERTIFICATES_CHECK),
+            .http_status => |status| {
+                try writeHttpStatus(stderr, status);
+                try stderr.writeAll(" when asked for the latest release.\n      Try again later.\n");
+            },
             .unreadable => return reportUpgradeFailure(stderr, .release_unreadable),
             .out_of_memory => return reportUpgradeFailure(stderr, .out_of_memory),
         },
@@ -612,11 +629,11 @@ fn reportUpgradeFailure(stderr: *Io.Writer, failure: UpgradeFailure) !u8 {
                     "      Check the network connection and try again. The installed zemo is unchanged.\n",
                 .{d.asset},
             ),
-            .http_status => |status| try stderr.print(
-                "zemo: GitHub answered HTTP {d} ({s}) for {s}.\n" ++
-                    "      Try again later. The installed zemo is unchanged.\n",
-                .{ @backingInt(status), @tagName(status), d.asset },
-            ),
+            .local_certificates => try stderr.writeAll(LOCAL_CERTIFICATES_DOWNLOAD),
+            .http_status => |status| {
+                try writeHttpStatus(stderr, status);
+                try stderr.print(" for {s}.\n      Try again later. The installed zemo is unchanged.\n", .{d.asset});
+            },
             .unreadable => try stderr.print(
                 "zemo: the answer from GitHub for {s} could not be read.\n" ++
                     "      Try again later. The installed zemo is unchanged.\n",
@@ -668,6 +685,11 @@ fn replaceFailure(path: []const u8, err: anyerror) UpgradeFailure {
     } };
 }
 
+/// ⚠ メモリ不足は「読めなかった」「見つからなかった」ではない。そう言うと別の原因を探させる。
+fn unlessOutOfMemory(err: anyerror, otherwise: UpgradeFailure) UpgradeFailure {
+    return if (err == error.OutOfMemory) .out_of_memory else otherwise;
+}
+
 /// 展開のエラーを振り分ける。⚠ 「入っていない」と「開けない」は別の答え。
 fn extractFailure(err: anyerror) UpgradeFailure {
     return switch (err) {
@@ -683,8 +705,8 @@ fn doUpgrade(allocator: std.mem.Allocator, io: Io, stdout: *Io.Writer, stderr: *
         return reportUpgradeFailure(stderr, .{ .check = fetch_failure });
     defer allocator.free(json);
 
-    const parsed = upgrade.parseReleaseJson(allocator, json) catch
-        return reportUpgradeFailure(stderr, .release_unreadable);
+    const parsed = upgrade.parseReleaseJson(allocator, json) catch |err|
+        return reportUpgradeFailure(stderr, unlessOutOfMemory(err, .release_unreadable));
     defer parsed.deinit();
 
     const cmp = upgrade.compareVersions(VERSION, parsed.value.tag_name);
@@ -718,8 +740,8 @@ fn doUpgrade(allocator: std.mem.Allocator, io: Io, stdout: *Io.Writer, stderr: *
                     defer allocator.free(archive);
 
                     // 3. 先に install_path を解決 (zip 抽出の作業領域として親ディレクトリを使う)
-                    const install_path = upgrade.installPath(allocator, io) catch
-                        return reportUpgradeFailure(stderr, .install_path_unknown);
+                    const install_path = upgrade.installPath(allocator, io) catch |err|
+                        return reportUpgradeFailure(stderr, unlessOutOfMemory(err, .install_path_unknown));
                     defer allocator.free(install_path);
 
                     // 4. アーカイブ形式に応じてバイナリを取り出す
@@ -1774,4 +1796,41 @@ test "replaceFailure: permission denied only for the permission errors" {
     try std.testing.expect(replaceFailure("/p", error.PermissionDenied).replace.permission_denied);
     try std.testing.expect(!replaceFailure("/p", error.NoSpaceLeft).replace.permission_denied);
     try std.testing.expectEqualStrings("/p", replaceFailure("/p", error.NoSpaceLeft).replace.path);
+}
+
+test "unlessOutOfMemory: out of memory is never reported as unreadable or unknown" {
+    try std.testing.expectEqual(UpgradeFailure.out_of_memory, unlessOutOfMemory(error.OutOfMemory, .release_unreadable));
+    try std.testing.expectEqual(UpgradeFailure.release_unreadable, unlessOutOfMemory(error.SyntaxError, .release_unreadable));
+    try std.testing.expectEqual(UpgradeFailure.install_path_unknown, unlessOutOfMemory(error.FileNotFound, .install_path_unknown));
+}
+
+test "reportUpgradeFailure: an HTTP status with no name prints the number, never panics" {
+    var buf: [512]u8 = undefined;
+    const unnamed: std.http.Status = @fromBackingInt(599);
+    try std.testing.expectEqualStrings(
+        "zemo: GitHub answered HTTP 599 for zemo-x86_64-linux-gnu.tar.gz.\n" ++
+            "      Try again later. The installed zemo is unchanged.\n",
+        try upgradeFailureText(&buf, .{ .download = .{ .asset = "zemo-x86_64-linux-gnu.tar.gz", .failure = .{ .http_status = unnamed } } }),
+    );
+    try std.testing.expectEqualStrings(
+        "zemo: GitHub answered HTTP 599 when asked for the latest release.\n" ++
+            "      Try again later.\n",
+        try upgradeFailureText(&buf, .{ .check = .{ .http_status = unnamed } }),
+    );
+}
+
+test "reportUpgradeFailure: unreadable CA certificates point at this machine, not the network" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: could not load this machine's CA certificates, so github.com could not be verified.\n" ++
+            "      Check the system certificate store (for example the ca-certificates package)\n" ++
+            "      and try again. The installed zemo is unchanged.\n",
+        try upgradeFailureText(&buf, .{ .download = .{ .asset = "zemo-x86_64-linux-gnu.tar.gz", .failure = .local_certificates } }),
+    );
+    try std.testing.expectEqualStrings(
+        "zemo: could not load this machine's CA certificates, so api.github.com could not be verified.\n" ++
+            "      Check the system certificate store (for example the ca-certificates package)\n" ++
+            "      and try again.\n",
+        try upgradeFailureText(&buf, .{ .check = .local_certificates }),
+    );
 }

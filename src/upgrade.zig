@@ -79,9 +79,13 @@ pub fn parseReleaseJson(
 pub const FetchFailure = union(enum) {
     /// 接続できなかった (名前解決・TCP・TLS)。何も届いていない。
     no_connection,
+    /// このマシンの CA 証明書を読めなかった。⚠ 接続より前、こちら側の失敗。回線を疑わせない。
+    local_certificates,
     /// 相手は答えたが 200 ではなかった。
     http_status: std.http.Status,
-    /// 答えは届いたが HTTP として読めなかった (ヘッダ・リダイレクト・圧縮)。
+    /// 接続のあとで失敗した。答えが HTTP として読めなかった (ヘッダ・リダイレクト・圧縮) のほか、
+    /// ⚠ リクエストの送信に失敗した場合と、本文を溜める途中のメモリ不足 (`Io.Writer.Allocating`
+    ///   が `WriteFailed` に変える) もここに入る。`fetch` のエラーからはこれらを区別できない。
     unreadable,
     out_of_memory,
 };
@@ -97,7 +101,7 @@ pub fn classifyFetchError(err: anyerror) FetchFailure {
     inline for (comptime @typeInfo(std.http.Client.ConnectTcpError).error_set.error_names.?) |name| {
         if (err == @field(anyerror, name)) return .no_connection;
     }
-    if (err == error.CertificateBundleLoadFailure) return .no_connection;
+    if (err == error.CertificateBundleLoadFailure) return .local_certificates;
     return .unreadable;
 }
 
@@ -489,7 +493,10 @@ test "classifyFetchError: connection-stage errors are no_connection" {
     try std.testing.expectEqual(FetchFailure.no_connection, classifyFetchError(error.ConnectionRefused));
     try std.testing.expectEqual(FetchFailure.no_connection, classifyFetchError(error.UnknownHostName));
     try std.testing.expectEqual(FetchFailure.no_connection, classifyFetchError(error.TlsInitializationFailed));
-    try std.testing.expectEqual(FetchFailure.no_connection, classifyFetchError(error.CertificateBundleLoadFailure));
+}
+
+test "classifyFetchError: an unreadable CA bundle is this machine's, not the network's" {
+    try std.testing.expectEqual(FetchFailure.local_certificates, classifyFetchError(error.CertificateBundleLoadFailure));
 }
 
 test "classifyFetchError: an answer that arrived but could not be read is unreadable, not no_connection" {
