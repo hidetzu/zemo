@@ -53,7 +53,7 @@ Download `zemo-x86_64-windows.zip` from the [latest release](https://github.com/
 
 ### From source
 
-Requires [Zig 0.17.0](https://ziglang.org/download/).
+Requires [Zig 0.17.0](https://ziglang.org/download/). With [mise](https://mise.jdx.dev/), `mise install` in the checkout installs it (`mise.toml` pins it).
 
 ```sh
 git clone https://github.com/hidetzu/zemo.git
