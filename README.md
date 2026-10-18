@@ -53,7 +53,7 @@ Download `zemo-x86_64-windows.zip` from the [latest release](https://github.com/
 
 ### From source
 
-Requires [Zig 0.16.0](https://ziglang.org/download/).
+Requires [Zig 0.17.0](https://ziglang.org/download/).
 
 ```sh
 git clone https://github.com/hidetzu/zemo.git

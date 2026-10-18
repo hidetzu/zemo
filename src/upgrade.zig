@@ -204,7 +204,7 @@ pub fn downloadToMemory(
 
     if (result.status != .ok) {
         std.log.err("download failed: HTTP {d} {s} url={s}", .{
-            @intFromEnum(result.status),
+            @backingInt(result.status),
             @tagName(result.status),
             url,
         });
@@ -368,7 +368,7 @@ fn replaceBinaryPosix(
         try w.interface.flush();
 
         // chmod 0o755 相当 (Unix の場合; Windows では no-op 相当の挙動)
-        const perms: std.Io.File.Permissions = @enumFromInt(0o755);
+        const perms: std.Io.File.Permissions = @fromBackingInt(@intCast(0o755));
         try temp_file.setPermissions(io, perms);
     }
 

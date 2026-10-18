@@ -55,7 +55,7 @@ body:
     attributes:
       label: Zig version (only if building from source)
       description: Output of `zig version`.
-      placeholder: "0.16.0"
+      placeholder: "0.17.0"
 
   - type: dropdown
     id: os
