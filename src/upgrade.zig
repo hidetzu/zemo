@@ -101,6 +101,8 @@ pub fn classifyFetchError(err: anyerror) FetchFailure {
     inline for (comptime @typeInfo(std.http.Client.ConnectTcpError).error_set.error_names.?) |name| {
         if (err == @field(anyerror, name)) return .no_connection;
     }
+    // ⚠ `get()` は先に自分で証明書を読み `client.now` を入れるので、std がこれを返す経路には
+    //   今は届かない。std に読み込みを任せる呼び出しが増えたときの備えとして残す。
     if (err == error.CertificateBundleLoadFailure) return .local_certificates;
     return .unreadable;
 }
@@ -108,8 +110,10 @@ pub fn classifyFetchError(err: anyerror) FetchFailure {
 /// このマシンの CA 証明書を読んだ結果を判定する。
 /// ⚠ 証明書が 1 件も無いと、std はエラーを返さず空のまま進み、TLS の段階で
 ///   `TlsInitializationFailed` になる。それは回線の失敗と見分けがつかないので、接続の前にここで止める。
-pub fn classifyCertificateScan(scanned: bool, count: usize) ?FetchFailure {
-    if (!scanned or count == 0) return .local_certificates;
+/// ⚠ 読み込みのメモリ不足は「証明書が読めない」ではない。ca-certificates を疑わせることになる。
+pub fn classifyCertificateScan(scan_error: ?anyerror, count: usize) ?FetchFailure {
+    if (scan_error) |err| return if (err == error.OutOfMemory) .out_of_memory else .local_certificates;
+    if (count == 0) return .local_certificates;
     return null;
 }
 
@@ -127,8 +131,8 @@ fn get(
     // ⚠ CA 証明書は std に任せず先に読む (classifyCertificateScan)。
     //   `client.now` を入れておくと、std は読み直さずこの束を使う。
     const now = std.Io.Clock.real.now(io);
-    const scanned = if (client.ca_bundle.rescan(allocator, io, now)) |_| true else |_| false;
-    if (classifyCertificateScan(scanned, client.ca_bundle.map.count())) |f| {
+    const scan_error: ?anyerror = if (client.ca_bundle.rescan(allocator, io, now)) |_| null else |err| err;
+    if (classifyCertificateScan(scan_error, client.ca_bundle.map.count())) |f| {
         failure.* = f;
         return error.FetchFailed;
     }
@@ -514,10 +518,14 @@ test "classifyFetchError: connection-stage errors are no_connection" {
 }
 
 test "classifyCertificateScan: no certificates at all is this machine's, not the network's" {
-    try std.testing.expectEqual(FetchFailure.local_certificates, classifyCertificateScan(true, 0).?);
-    try std.testing.expectEqual(FetchFailure.local_certificates, classifyCertificateScan(false, 0).?);
-    try std.testing.expectEqual(FetchFailure.local_certificates, classifyCertificateScan(false, 12).?);
-    try std.testing.expect(classifyCertificateScan(true, 1) == null);
+    try std.testing.expectEqual(FetchFailure.local_certificates, classifyCertificateScan(null, 0).?);
+    try std.testing.expectEqual(FetchFailure.local_certificates, classifyCertificateScan(error.FileNotFound, 0).?);
+    try std.testing.expectEqual(FetchFailure.local_certificates, classifyCertificateScan(error.CertificateAuthorityBundleTooBig, 12).?);
+    try std.testing.expect(classifyCertificateScan(null, 1) == null);
+}
+
+test "classifyCertificateScan: out of memory while loading is out of memory, not the certificates" {
+    try std.testing.expectEqual(FetchFailure.out_of_memory, classifyCertificateScan(error.OutOfMemory, 0).?);
 }
 
 test "classifyFetchError: an unreadable CA bundle is this machine's, not the network's" {
