@@ -167,13 +167,12 @@ pub fn run(
     env: *const std.process.Environ.Map,
     args: []const []const u8,
 ) !u8 {
+    // ⚠ どちらもバッファを持たない (stdioWriter)。flush する相手が無いので defer flush も無い。
     var stdout_w = stdioWriter(.stdout(), io);
     const stdout = &stdout_w.interface;
-    defer stdout.flush() catch {};
 
     var stderr_w = stdioWriter(.stderr(), io);
     const stderr = &stderr_w.interface;
-    defer stderr.flush() catch {};
 
     return switch (parseArgs(args)) {
         .help => blk: {
@@ -349,11 +348,23 @@ fn printFile(io: Io, file_path: []const u8, stdout: *Io.Writer, stderr: *Io.Writ
     };
     defer file.close(io);
 
-    var read_buf: [4096]u8 = undefined;
-    var file_reader = file.reader(io, &read_buf);
-    _ = try file_reader.interface.streamRemaining(stdout);
-
+    try copyFileTo(io, file, stdout);
     return 0;
+}
+
+/// ファイルの中身を `w` にそのまま書く。
+/// ⚠ `Reader.streamRemaining` に stdio の writer を渡さない。sendfile が使えない出力先
+///   (Linux の `>>`、そして std の実装上 macOS / Windows) では書き込み側のバッファを要求し、
+///   バッファを持たない stdioWriter だとパニックする (hidetzu/zemo#27 のレビュー)。
+fn copyFileTo(io: Io, file: Io.File, w: *Io.Writer) !void {
+    var buf: [4096]u8 = undefined;
+    var offset: u64 = 0;
+    while (true) {
+        const n = try file.readPositional(io, &.{&buf}, offset);
+        if (n == 0) return;
+        try w.writeAll(buf[0..n]);
+        offset += n;
+    }
 }
 
 fn writeSectionHeader(stdout: *Io.Writer, name: []const u8, wrote_any: bool, previous_ended_with_newline: bool) !void {
@@ -389,9 +400,7 @@ fn dumpSectionFileIfExists(
         previous_ended_with_newline.* = last[0] == '\n';
     }
 
-    var read_buf: [4096]u8 = undefined;
-    var file_reader = file.reader(io, &read_buf);
-    _ = try file_reader.interface.streamRemaining(stdout);
+    try copyFileTo(io, file, stdout);
 }
 
 fn dumpMemos(allocator: std.mem.Allocator, io: Io, memo: []const u8, stdout: *Io.Writer) !u8 {
@@ -741,10 +750,7 @@ fn doUpgrade(allocator: std.mem.Allocator, io: Io, stdout: *Io.Writer, stderr: *
                     const url = chosen.url;
 
                     // 2. アーカイブをダウンロード
-                    // ⚠ stdout はバッファされている。flush しないと、失敗したときに
-                    //   エラーのあとに「Downloading」が出る。
                     try stdout.print("Downloading {s}...\n", .{asset});
-                    try stdout.flush();
                     const archive = upgrade.downloadToMemory(allocator, io, url, &fetch_failure) catch
                         return reportUpgradeFailure(stderr, .{ .download = .{ .asset = asset, .failure = fetch_failure } });
                     defer allocator.free(archive);
@@ -1864,4 +1870,73 @@ test "stdioWriter: two writers on one file keep every line, in the order they we
     var read_buf: [128]u8 = undefined;
     const n = try file.readPositionalAll(io, &read_buf, 0);
     try std.testing.expectEqualStrings("demo: backlog -> prioritized\nzemo: failed\nmore\n", read_buf[0..n]);
+}
+
+/// テスト用: O_APPEND で開いたファイル (`zemo … >> f` の出力先と同じ) を返す。
+fn openAppendForTest(dir: Io.Dir, name: []const u8) !Io.File {
+    const fd = try std.posix.openat(dir.handle, name, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, 0o644);
+    return .{ .handle = fd, .flags = .{ .nonblocking = false } };
+}
+
+test "printFile: an unbuffered writer on an append-mode file gets the whole file" {
+    // ⚠ `zemo cat t >> f` の再現。streamRemaining だとここでパニックした。
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const body = "# t1\nbody\nline three\n";
+    {
+        const f = try tmp.dir.createFile(io, "t1.md", .{});
+        defer f.close(io);
+        var w = f.writer(io, &.{});
+        try w.interface.writeAll(body);
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(io, &path_buf);
+    const src_path = try std.fs.path.join(std.testing.allocator, &.{ path_buf[0..dir_len], "t1.md" });
+    defer std.testing.allocator.free(src_path);
+
+    const out = try openAppendForTest(tmp.dir, "out.txt");
+    defer out.close(io);
+    var out_w = stdioWriter(out, io);
+    var err_w = stdioWriter(out, io);
+
+    try std.testing.expectEqual(@as(u8, 0), try printFile(io, src_path, &out_w.interface, &err_w.interface));
+
+    const back = try tmp.dir.openFile(io, "out.txt", .{});
+    defer back.close(io);
+    var read_buf: [128]u8 = undefined;
+    const n = try back.readPositionalAll(io, &read_buf, 0);
+    try std.testing.expectEqualStrings(body, read_buf[0..n]);
+}
+
+test "dumpMemos: an unbuffered writer on an append-mode file gets every section" {
+    // ⚠ `zemo dump >> f` の再現。streamRemaining だと最初の見出しのあとでパニックした。
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(io, "topics", .default_dir);
+    inline for (.{ .{ "scratch.txt", "scratch\n" }, .{ "topics/t1.md", "# t1\nbody\n" } }) |entry| {
+        const f = try tmp.dir.createFile(io, entry[0], .{});
+        defer f.close(io);
+        var w = f.writer(io, &.{});
+        try w.interface.writeAll(entry[1]);
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(io, &path_buf);
+
+    const out = try openAppendForTest(tmp.dir, "out.txt");
+    defer out.close(io);
+    var out_w = stdioWriter(out, io);
+    try std.testing.expectEqual(@as(u8, 0), try dumpMemos(a, io, path_buf[0..dir_len], &out_w.interface));
+
+    const back = try tmp.dir.openFile(io, "out.txt", .{});
+    defer back.close(io);
+    var read_buf: [256]u8 = undefined;
+    const n = try back.readPositionalAll(io, &read_buf, 0);
+    try std.testing.expectEqualStrings("=== scratch ===\n\nscratch\n\n=== t1 ===\n\n# t1\nbody\n", read_buf[0..n]);
 }

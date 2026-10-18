@@ -91,6 +91,12 @@ printf 'not a topic\n'       > "$ZEMO_DIR/topics/ignore.txt"
 "$BIN" ls          # expect: alpha
 "$BIN" cat alpha   # expect: the file, byte for byte
 "$BIN" dump        # expect: scratch and every topic, with headers
+# ⚠ an append-mode file: the copy must not need an output buffer (hidetzu/zemo#27)
+: > "$WORK/cat.txt";  "$BIN" cat alpha >> "$WORK/cat.txt"; echo "exit=$?"   # expect: exit=0
+cmp "$WORK/cat.txt" "$ZEMO_DIR/topics/alpha.md" && echo same                # expect: same
+"$BIN" dump > "$WORK/dump-new.txt"
+: > "$WORK/dump.txt"; "$BIN" dump >> "$WORK/dump.txt"; echo "exit=$?"       # expect: exit=0
+cmp "$WORK/dump.txt" "$WORK/dump-new.txt" && echo same                      # expect: same
 "$BIN" cat nope; echo "exit=$?"    # expect: exit 1 and a sentence on stderr
 
 export ZEMO_EDITOR=true            # non-interactive, see below
@@ -187,6 +193,14 @@ for pair in "both.txt:2 -> 3" "stdout.txt:3 -> 4" "append-both.txt:4 -> 5" "appe
      END { print (p && m && k && p < m && m < k) ? "in order" : "OUT OF ORDER" }' "$f"
                                                             # expect: in order
 done
+
+# ⚠ push refused — zemo's own line before git's run, zemo's own error last (hidetzu/zemo#26)
+chmod -R a-w "$WORK/remote.git"
+"$BIN" ideas:priority zig-lsp-server 2 > "$WORK/refused.txt" 2>&1; echo "exit=$?"   # expect: exit=1
+awk -v z="zig-lsp-server: priority 1 -> 2" '$0 == z { m = NR } /^zemo: .*push/ { e = NR }
+  END { print (m && e && m < e && e >= NR - 1) ? "in order" : "OUT OF ORDER" }' "$WORK/refused.txt"
+                                                            # expect: in order
+chmod -R u+w "$WORK/remote.git"
 ```
 
 ⚠ **The redirect case is hidetzu/zemo#23; the order is hidetzu/zemo#26.**
