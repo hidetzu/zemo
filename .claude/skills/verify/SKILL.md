@@ -169,7 +169,16 @@ git -C "$WORK/memo" log --oneline -- ideas/zig-lsp-server.md
 before=$(git -C "$WORK/memo" rev-parse HEAD)
 "$BIN" ideas:status zig-lsp-server prioritized      # the status it already has
 test "$before" = "$(git -C "$WORK/memo" rev-parse HEAD)"   # ⚠ expect: no new commit
+
+# ⚠ one file for both streams — zemo's own line and git's lines must all survive
+"$BIN" ideas:status zig-lsp-server experimenting > "$WORK/out.txt" 2>&1
+tail -n 1 "$WORK/out.txt"                   # expect: zig-lsp-server: prioritized -> experimenting
+grep -c 'docs(ideas): zig-lsp-server prioritized -> experimenting' "$WORK/out.txt"   # expect: 1
 ```
+
+⚠ **The redirect case is hidetzu/zemo#23.** ⚠ **With positional stdout/stderr writers, zemo's line
+landed at offset 0 over git's output and the last line was lost** — ⚠ **observed on `f7161dd`,
+2026-10-18.** ⚠ **A pipe does not show it; only a regular file does.**
 
 - ⚠ **Depend on nobody's uptime** (contract). ⚠ **The remote is a local bare repo, never a host.**
 - ⚠ **`git` failing is still a `FAIL`** — ⚠ **and it is `external`, not evidence that our code broke.**
