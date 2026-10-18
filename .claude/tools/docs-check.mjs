@@ -141,13 +141,28 @@ const CASES = [
       one("build.zig.zon", /^\s*\.minimum_zig_version\s*=\s*"([^"]+)"/m);
       const workflows = execFileSync("git", ["ls-files", ".github/workflows/*.yml"], { cwd: ROOT, encoding: "utf8" })
         .trim().split("\n").filter(Boolean);
+      // ⚠ Every `setup-zig@` step must yield a version, or the case fails naming it.
+      //   A step this cannot read is not skipped: skipping one is the same silent hole as
+      //   matching none, one step smaller.
+      const indent = (l) => l.length - l.trimStart().length;
       let steps = 0;
       for (const f of workflows) {
-        for (const m of read(f).matchAll(/setup-zig@[^\n]*\n\s*with:\s*\n\s*version:\s*([^\s#]+)/g)) {
-          steps++; found.push([f, m[1]]);
-        }
+        const lines = read(f).split(/\r?\n/);
+        lines.forEach((line, i) => {
+          if (!line.includes("setup-zig@")) return;
+          // `- uses: …` opens the step at the dash; `uses: …` under `- name:` sits two deeper.
+          const step = line.trimStart().startsWith("- ") ? indent(line) : indent(line) - 2;
+          let version = null;
+          for (let j = i + 1; j < lines.length; j++) {
+            if (lines[j].trim() && indent(lines[j]) <= step) break;
+            const m = /^\s*version:\s*["']?([^"'\s#]+)["']?/.exec(lines[j]);
+            if (m) { version = m[1]; break; }
+          }
+          if (!version) throw new Error(`${f}:${i + 1} has a setup-zig step with no version this case can read`);
+          steps++; found.push([f, version]);
+        });
       }
-      if (!steps) throw new Error("no setup-zig step with a version was found in .github/workflows/");
+      if (!steps) throw new Error("no setup-zig step was found in .github/workflows/");
       let prose = 0;
       for (const f of markdownFiles()) {
         for (const m of stripMarkdown(read(f)).matchAll(/\bZig (\d+\.\d+\.\d+)\b/g)) {
