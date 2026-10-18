@@ -170,15 +170,24 @@ before=$(git -C "$WORK/memo" rev-parse HEAD)
 "$BIN" ideas:status zig-lsp-server prioritized      # the status it already has
 test "$before" = "$(git -C "$WORK/memo" rev-parse HEAD)"   # ⚠ expect: no new commit
 
-# ⚠ one file for both streams — zemo's own line and git's lines must all survive
-"$BIN" ideas:status zig-lsp-server experimenting > "$WORK/out.txt" 2>&1
-tail -n 1 "$WORK/out.txt"                   # expect: zig-lsp-server: prioritized -> experimenting
-grep -c 'docs(ideas): zig-lsp-server prioritized -> experimenting' "$WORK/out.txt"   # expect: 1
+# ⚠ stdout and stderr sharing one file — zemo's line and git's line must both survive
+#   (order is not asserted: zemo's stdout is flushed at exit, after git has written)
+"$BIN" ideas:priority zig-lsp-server 3 > "$WORK/both.txt" 2>&1
+"$BIN" ideas:priority zig-lsp-server 4 > "$WORK/stdout.txt"
+: > "$WORK/append.txt"; "$BIN" ideas:priority zig-lsp-server 5 >> "$WORK/append.txt" 2>&1
+for pair in "both.txt:2 -> 3" "stdout.txt:3 -> 4" "append.txt:4 -> 5"; do
+  f="$WORK/${pair%%:*}"; t="${pair#*:}"
+  grep -c '^Already up to date\.$' "$f"                    # expect: 1 (git pull, written first)
+  grep -c "docs(ideas): zig-lsp-server priority $t" "$f"   # expect: 1 (git commit)
+  grep -c "^zig-lsp-server: priority $t\$" "$f"            # expect: 1 (zemo)
+done
 ```
 
 ⚠ **The redirect case is hidetzu/zemo#23.** ⚠ **With positional stdout/stderr writers, zemo's line
-landed at offset 0 over git's output and the last line was lost** — ⚠ **observed on `f7161dd`,
+landed at offset 0 over git's output and lines were lost** — ⚠ **observed on `f7161dd`,
 2026-10-18.** ⚠ **A pipe does not show it; only a regular file does.**
+⚠ **Each file must hold all three lines once — ⚠ git's first line is the one an overwrite at offset 0 destroys, so it is the one that has to be asserted.** ⚠ **Never assert their order** — ⚠ **that would pin the
+current buffering, which `docs/SPEC.md` does not claim.**
 
 - ⚠ **Depend on nobody's uptime** (contract). ⚠ **The remote is a local bare repo, never a host.**
 - ⚠ **`git` failing is still a `FAIL`** — ⚠ **and it is `external`, not evidence that our code broke.**

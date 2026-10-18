@@ -1843,7 +1843,7 @@ test "reportUpgradeFailure: unreadable CA certificates point at this machine, no
     );
 }
 
-test "stdioWriter: two writers on one file keep every line, in write order" {
+test "stdioWriter: two writers on one file keep every line, in the order they flush" {
     // `zemo … > f 2>&1` の再現: stdout と stderr が同じファイルを指す。
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
