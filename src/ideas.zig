@@ -20,8 +20,8 @@ pub const Status = enum {
     dropped,
 
     pub fn fromString(s: []const u8) ?Status {
-        inline for (@typeInfo(Status).@"enum".fields) |f| {
-            if (std.mem.eql(u8, s, f.name)) return @field(Status, f.name);
+        inline for (@typeInfo(Status).@"enum".field_names) |field_name| {
+            if (std.mem.eql(u8, s, field_name)) return @field(Status, field_name);
         }
         return null;
     }
@@ -451,8 +451,8 @@ fn expectProblem(want: std.meta.Tag(Problem), src: []const u8) !void {
 
 test "TRANSITIONS covers every Status" {
     // ⚠ allowedFrom は網羅を前提に unreachable を持つ。網羅が崩れたらここで落ちる。
-    inline for (@typeInfo(Status).@"enum".fields) |f| {
-        _ = allowedFrom(@field(Status, f.name));
+    inline for (@typeInfo(Status).@"enum".field_names) |field_name| {
+        _ = allowedFrom(@field(Status, field_name));
     }
 }
 
@@ -746,7 +746,7 @@ test "writeListRow: an unreadable idea keeps its row and says why" {
 test "writeListRow: a long evaluation is marked as truncated" {
     var out = std.Io.Writer.Allocating.init(testing.allocator);
     defer out.deinit();
-    const long = "---\nstatus: backlog\nevaluation: " ++ ("x" ** 60) ++ "\n---\n";
+    const long = "---\nstatus: backlog\nevaluation: " ++ @as([60]u8, @splat('x')) ++ "\n---\n";
     try writeListRow(&out.writer, entry("e", long));
     try out.writer.flush();
     try testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, out.written(), "\n"), "..."));

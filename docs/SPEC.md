@@ -87,7 +87,7 @@ built, how many runs, which percentile.
 
 ⚠ **A number without those is deleted, not corrected.**
 
-⚠ **Conditions shared by every row below**: Zig 0.16.0 as pinned by `build.zig.zon`; built from a
+⚠ **Conditions shared by every row below**: Zig 0.17.0 as pinned by `mise.toml`; built from a
 clean checkout by `zig build`; ⚠ **the host target, which on Linux means the bundled musl libc**
 (`build.zig`); `git` and the editor are whatever the machine already had.
 ⚠ **Each row states its own optimize mode, machine and run count** — ⚠ **a row that does not is

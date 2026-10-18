@@ -90,8 +90,8 @@ fn parseIdeas(verb: []const u8, args: []const []const u8) Command {
             const v = args[2][SORT_PREFIX.len..];
             // ⚠ 未知の値は既定にフォールバックしない。打ち間違いが黙って
             //   別の問いに答えることになる。
-            inline for (@typeInfo(ideas.Sort).@"enum".fields) |f| {
-                if (std.mem.eql(u8, v, f.name)) return .{ .ideas_list = @field(ideas.Sort, f.name) };
+            inline for (@typeInfo(ideas.Sort).@"enum".field_names) |field_name| {
+                if (std.mem.eql(u8, v, field_name)) return .{ .ideas_list = @field(ideas.Sort, field_name) };
             }
             return .{ .ideas_fault = .{ .bad_sort = v } };
         }
@@ -1028,9 +1028,9 @@ fn priorityText(buf: []u8, p: ?u8) []const u8 {
 }
 
 fn writeAllStatuses(w: *Io.Writer) !void {
-    inline for (@typeInfo(ideas.Status).@"enum".fields, 0..) |f, i| {
+    inline for (@typeInfo(ideas.Status).@"enum".field_names, 0..) |field_name, i| {
         if (i > 0) try w.writeAll(", ");
-        try w.writeAll(f.name);
+        try w.writeAll(field_name);
     }
 }
 

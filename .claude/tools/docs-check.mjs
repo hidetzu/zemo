@@ -122,6 +122,73 @@ const CASES = [
         : { ok: false, said: `src/cli.zig says ${inCli[1]} and build.zig.zon says ${inZon[1]} \u2014 a release would ship one of them wrong` };
     },
   },
+  {
+    name: "zig-version-single-source",
+    // ⚠ Grounds: the Zig version is written where the toolchain is chosen — `mise.toml` (the
+    //   developer's shell), `build.zig.zon` (`minimum_zig_version`), each `setup-zig` step in
+    //   `.github/workflows/` (CI and the release) — and in prose (`Zig X.Y.Z` in the docs).
+    //   ⚠ The same shape as `version-single-source` (`CLAUDE.md` §9): one fact, many copies.
+    // ⚠ Every source must yield at least one value; a pattern that matches nothing fails,
+    //   because zero matches and zero problems look the same (`rules/verification.md`).
+    run() {
+      const found = []; // [where, version]
+      const one = (file, re) => {
+        const m = re.exec(read(file));
+        if (!m) throw new Error(`${file} no longer declares the Zig version`);
+        found.push([file, m[1]]);
+      };
+      one("mise.toml", /^\s*zig\s*=\s*"([^"]+)"/m);
+      one("build.zig.zon", /^\s*\.minimum_zig_version\s*=\s*"([^"]+)"/m);
+      const workflows = execFileSync("git", ["ls-files", ".github/workflows/*.yml"], { cwd: ROOT, encoding: "utf8" })
+        .trim().split("\n").filter(Boolean);
+      // ⚠ Every `setup-zig@` step must yield a version, or the case fails naming it.
+      //   A step this cannot read is not skipped: skipping one is the same silent hole as
+      //   matching none, one step smaller.
+      const indent = (l) => l.length - l.trimStart().length;
+      let steps = 0;
+      for (const f of workflows) {
+        const lines = read(f).split(/\r?\n/);
+        lines.forEach((line, i) => {
+          if (!line.includes("setup-zig@")) return;
+          // `- uses: …` opens the step at the dash; `uses: …` under `- name:` sits two deeper.
+          const step = line.trimStart().startsWith("- ") ? indent(line) : indent(line) - 2;
+          // ⚠ Only `version:` directly under this step's own `with:` counts — a `version:` under
+          //   `env:` or anywhere else in the step is not what setup-zig reads.
+          const key = step + 2;
+          let version = null;
+          for (let j = i + 1; j < lines.length; j++) {
+            if (lines[j].trim() && indent(lines[j]) <= step) break;
+            if (indent(lines[j]) !== key || !/^\s*with:\s*(#.*)?$/.test(lines[j])) continue;
+            let child = null;
+            for (let k = j + 1; k < lines.length; k++) {
+              if (!lines[k].trim()) continue;
+              if (indent(lines[k]) <= key) break;
+              child ??= indent(lines[k]);
+              if (indent(lines[k]) !== child) continue;
+              const m = /^\s*version:\s*["']?([^"'\s#]+)["']?/.exec(lines[k]);
+              if (m) { version = m[1]; break; }
+            }
+            break;
+          }
+          if (!version) throw new Error(`${f}:${i + 1} has a setup-zig step with no version this case can read`);
+          steps++; found.push([f, version]);
+        });
+      }
+      if (!steps) throw new Error("no setup-zig step was found in .github/workflows/");
+      let prose = 0;
+      for (const f of markdownFiles()) {
+        for (const m of stripMarkdown(read(f)).matchAll(/\bZig (\d+\.\d+\.\d+)\b/g)) {
+          prose++; found.push([f, m[1]]);
+        }
+      }
+      if (!prose) throw new Error("no `Zig X.Y.Z` was found in any tracked markdown file");
+      const want = found[0][1];
+      const off = found.filter(([, v]) => v !== want);
+      return off.length
+        ? { ok: false, said: `mise.toml says Zig ${want}, and these do not:\n      ` + off.map(([f, v]) => `${f}: ${v}`).join("\n      ") }
+        : { ok: true, said: `every Zig version agrees (${want}; ${found.length} places: mise.toml, build.zig.zon, ${steps} setup-zig steps, ${prose} in prose)` };
+    },
+  },
 ];
 
 // ── the runner ─────────────────────────────────────────────────────────────
