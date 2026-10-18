@@ -11,7 +11,7 @@ description: Run zemo's checks in order — inner (zig build test, docs-check), 
 ⚠ **Return the `PASS` / `FAIL` / `NOT-VERIFIED` block from the contract, verbatim in shape.**
 ⚠ **`Regression guard` and `Mutation check` are never left empty.**
 
-Requires Zig 0.17.0 (`build.zig.zon` pins it) and `node` for the document checks.
+Requires Zig 0.17.0 (`mise.toml` pins it; `build.zig.zon` requires at least it) and `node` for the document checks.
 ⚠ **On a Linux host the default target is `musl`** — glibc's SFrame format is incompatible with
 the bundled LLD (`build.zig`). ⚠ **A bare `zig test src/foo.zig` fails to link for that reason
 and it is not a failure of the code.** Pass `-target x86_64-linux-musl`.

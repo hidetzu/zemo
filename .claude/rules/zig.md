@@ -7,7 +7,7 @@ platforms, or from the fact that `argv` and the environment are hostile input.
 ⚠ **It binds from the first line of code** ([`README.md`](README.md)).
 ⚠ **What went wrong in this repository is `CLAUDE.md` §9, not here.**
 
-Zig 0.17.0 (`build.zig.zon` pins it).
+Zig 0.17.0 (`mise.toml` pins it; `build.zig.zon` requires at least it).
 
 ## The pure / I/O split
 
