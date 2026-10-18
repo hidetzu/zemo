@@ -73,26 +73,101 @@ pub fn parseReleaseJson(
     });
 }
 
-pub fn fetchLatestReleaseJson(allocator: std.mem.Allocator, io: anytype) ![]u8 {
+/// GitHub への問い合わせが成功しなかった理由。
+/// ⚠ 「つながらなかった」「エラーを返された」「読めなかった」は次の一手が違うので分ける
+///   (`.claude/rules/evidence.md` § Outcomes)。文面は `cli.zig` だけが書く。
+pub const FetchFailure = union(enum) {
+    /// 接続できなかった (名前解決・TCP・TLS)。何も届いていない。
+    no_connection,
+    /// このマシンの CA 証明書を読めなかった。⚠ 接続より前、こちら側の失敗。回線を疑わせない。
+    local_certificates,
+    /// 相手は答えたが 200 ではなかった。
+    http_status: std.http.Status,
+    /// 接続のあとで失敗した。答えが HTTP として読めなかった (ヘッダ・リダイレクト・圧縮) のほか、
+    /// ⚠ リクエストの送信に失敗した場合と、本文を溜める途中のメモリ不足 (`Io.Writer.Allocating`
+    ///   が `WriteFailed` に変える) もここに入る。`fetch` のエラーからはこれらを区別できない。
+    unreadable,
+    out_of_memory,
+};
+
+/// ⚠ 失敗の中身は `failure` に入る。エラー名そのものは人に見せない。
+pub const FetchError = error{FetchFailed};
+
+/// `std.http.Client.fetch` のエラーを `FetchFailure` に振り分ける。
+/// ⚠ 接続段階のエラーだけが `no_connection`。それ以外を「つながらない」と言うと、
+///   届いた答えが壊れていたのに回線を疑わせることになる。
+pub fn classifyFetchError(err: anyerror) FetchFailure {
+    if (err == error.OutOfMemory) return .out_of_memory;
+    inline for (comptime @typeInfo(std.http.Client.ConnectTcpError).error_set.error_names.?) |name| {
+        if (err == @field(anyerror, name)) return .no_connection;
+    }
+    // ⚠ `get()` は先に自分で証明書を読み `client.now` を入れるので、std がこれを返す経路には
+    //   今は届かない。std に読み込みを任せる呼び出しが増えたときの備えとして残す。
+    if (err == error.CertificateBundleLoadFailure) return .local_certificates;
+    return .unreadable;
+}
+
+/// このマシンの CA 証明書を読んだ結果を判定する。
+/// ⚠ 証明書が 1 件も無いと、std はエラーを返さず空のまま進み、TLS の段階で
+///   `TlsInitializationFailed` になる。それは回線の失敗と見分けがつかないので、接続の前にここで止める。
+/// ⚠ 読み込みのメモリ不足は「証明書が読めない」ではない。ca-certificates を疑わせることになる。
+pub fn classifyCertificateScan(scan_error: ?anyerror, count: usize) ?FetchFailure {
+    if (scan_error) |err| return if (err == error.OutOfMemory) .out_of_memory else .local_certificates;
+    if (count == 0) return .local_certificates;
+    return null;
+}
+
+/// GET して本文を返す。戻り値は呼び出し側が free する。
+fn get(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    url: []const u8,
+    headers: []const std.http.Header,
+    failure: *FetchFailure,
+) FetchError![]u8 {
     var client = std.http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
+
+    // ⚠ CA 証明書は std に任せず先に読む (classifyCertificateScan)。
+    //   `client.now` を入れておくと、std は読み直さずこの束を使う。
+    const now = std.Io.Clock.real.now(io);
+    const scan_error: ?anyerror = if (client.ca_bundle.rescan(allocator, io, now)) |_| null else |err| err;
+    if (classifyCertificateScan(scan_error, client.ca_bundle.map.count())) |f| {
+        failure.* = f;
+        return error.FetchFailed;
+    }
+    client.now = now;
 
     var body = std.Io.Writer.Allocating.init(allocator);
     defer body.deinit();
 
-    const result = try client.fetch(.{
-        .location = .{ .url = "https://api.github.com/repos/hidetzu/zemo/releases/latest" },
+    const result = client.fetch(.{
+        .location = .{ .url = url },
         .method = .GET,
         .response_writer = &body.writer,
-        .extra_headers = &.{
-            .{ .name = "User-Agent", .value = "zemo-upgrade" },
-            .{ .name = "Accept", .value = "application/vnd.github+json" },
-        },
-    });
+        .extra_headers = headers,
+    }) catch |err| {
+        failure.* = classifyFetchError(err);
+        return error.FetchFailed;
+    };
 
-    if (result.status != .ok) return error.HttpRequestFailed;
+    if (result.status != .ok) {
+        failure.* = .{ .http_status = result.status };
+        return error.FetchFailed;
+    }
 
-    return body.toOwnedSlice();
+    return body.toOwnedSlice() catch {
+        failure.* = .out_of_memory;
+        return error.FetchFailed;
+    };
+}
+
+/// 最新リリースの JSON を返す。戻り値は呼び出し側が free する。
+pub fn fetchLatestReleaseJson(allocator: std.mem.Allocator, io: std.Io, failure: *FetchFailure) FetchError![]u8 {
+    return get(allocator, io, "https://api.github.com/repos/hidetzu/zemo/releases/latest", &.{
+        .{ .name = "User-Agent", .value = "zemo-upgrade" },
+        .{ .name = "Accept", .value = "application/vnd.github+json" },
+    }, failure);
 }
 
 pub fn findAssetUrl(info: ReleaseInfo, target_name: []const u8) ?[]const u8 {
@@ -181,37 +256,17 @@ pub fn installPath(allocator: std.mem.Allocator, io: std.Io) ![:0]u8 {
     return std.process.executablePathAlloc(io, allocator);
 }
 
+/// アセットをメモリにダウンロードする。戻り値は呼び出し側が free する。
 pub fn downloadToMemory(
     allocator: std.mem.Allocator,
     io: std.Io,
     url: []const u8,
-) ![]u8 {
-    var client = std.http.Client{ .allocator = allocator, .io = io };
-    defer client.deinit();
-
-    var body = std.Io.Writer.Allocating.init(allocator);
-    defer body.deinit();
-
-    const result = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .GET,
-        .response_writer = &body.writer,
-        .extra_headers = &.{
-            .{ .name = "User-Agent", .value = "zemo/0.2.0 (+https://github.com/hidetzu/zemo)" },
-            .{ .name = "Accept", .value = "*/*" },
-        },
-    });
-
-    if (result.status != .ok) {
-        std.log.err("download failed: HTTP {d} {s} url={s}", .{
-            @backingInt(result.status),
-            @tagName(result.status),
-            url,
-        });
-        return error.HttpRequestFailed;
-    }
-
-    return body.toOwnedSlice();
+    failure: *FetchFailure,
+) FetchError![]u8 {
+    return get(allocator, io, url, &.{
+        .{ .name = "User-Agent", .value = "zemo/0.2.0 (+https://github.com/hidetzu/zemo)" },
+        .{ .name = "Accept", .value = "*/*" },
+    }, failure);
 }
 
 pub fn extractZemoBinary(
@@ -454,6 +509,34 @@ pub fn cleanupStaleBinary(allocator: std.mem.Allocator, io: std.Io) void {
     const old_path = std.fmt.allocPrint(allocator, "{s}.old", .{exe_path}) catch return;
     defer allocator.free(old_path);
     std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+}
+
+test "classifyFetchError: connection-stage errors are no_connection" {
+    try std.testing.expectEqual(FetchFailure.no_connection, classifyFetchError(error.ConnectionRefused));
+    try std.testing.expectEqual(FetchFailure.no_connection, classifyFetchError(error.UnknownHostName));
+    try std.testing.expectEqual(FetchFailure.no_connection, classifyFetchError(error.TlsInitializationFailed));
+}
+
+test "classifyCertificateScan: no certificates at all is this machine's, not the network's" {
+    try std.testing.expectEqual(FetchFailure.local_certificates, classifyCertificateScan(null, 0).?);
+    try std.testing.expectEqual(FetchFailure.local_certificates, classifyCertificateScan(error.FileNotFound, 0).?);
+    try std.testing.expectEqual(FetchFailure.local_certificates, classifyCertificateScan(error.CertificateAuthorityBundleTooBig, 12).?);
+    try std.testing.expect(classifyCertificateScan(null, 1) == null);
+}
+
+test "classifyCertificateScan: out of memory while loading is out of memory, not the certificates" {
+    try std.testing.expectEqual(FetchFailure.out_of_memory, classifyCertificateScan(error.OutOfMemory, 0).?);
+}
+
+test "classifyFetchError: an unreadable CA bundle is this machine's, not the network's" {
+    try std.testing.expectEqual(FetchFailure.local_certificates, classifyFetchError(error.CertificateBundleLoadFailure));
+}
+
+test "classifyFetchError: an answer that arrived but could not be read is unreadable, not no_connection" {
+    try std.testing.expectEqual(FetchFailure.unreadable, classifyFetchError(error.HttpHeadersInvalid));
+    try std.testing.expectEqual(FetchFailure.unreadable, classifyFetchError(error.TooManyHttpRedirects));
+    try std.testing.expectEqual(FetchFailure.unreadable, classifyFetchError(error.UnsupportedCompressionMethod));
+    try std.testing.expectEqual(FetchFailure.out_of_memory, classifyFetchError(error.OutOfMemory));
 }
 
 test "parseReleaseJson: invalid JSON returns error" {

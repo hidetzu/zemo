@@ -548,17 +548,165 @@ fn ensureFile(io: Io, abs_path: []const u8, template: ?[]const u8) !void {
     };
 }
 
-fn doUpgrade(allocator: std.mem.Allocator, io: Io, stdout: *Io.Writer, stderr: *Io.Writer, mode: upgrade.UpgradeMode) !u8 {
-    const json = upgrade.fetchLatestReleaseJson(allocator, io) catch |err| {
-        try stderr.print("zemo: failed to check latest release: {s}\n", .{@errorName(err)});
-        return 1;
+/// `zemo upgrade` が止まった理由。⚠ 文面は `reportUpgradeFailure` だけが書く。
+/// ⚠ 段階ごとに分けるのは、次の一手 (待つ・回線を見る・報告する・手で入れる) が違うから。
+pub const UpgradeFailure = union(enum) {
+    /// 最新リリースの問い合わせ。
+    check: upgrade.FetchFailure,
+    /// 最新リリースの情報が JSON として読めなかった。
+    release_unreadable,
+    /// このプラットフォーム向けのビルドが配布されていない (musl Linux ほか)。
+    unsupported_target,
+    /// 最新リリースに、このプラットフォーム向けのアセットが載っていない。
+    /// ⚠ 「読めなかった」ではない。読めたうえで、無かった。
+    asset_missing: []const u8,
+    /// アセットのダウンロード。
+    download: struct { asset: []const u8, failure: upgrade.FetchFailure },
+    /// アーカイブを展開できなかった。
+    archive_unreadable,
+    /// アーカイブは開けたが zemo のバイナリが入っていなかった。
+    archive_without_binary,
+    /// 自分がどこにインストールされているか分からなかった。
+    install_path_unknown,
+    /// 置き換えに失敗した。
+    replace: struct { path: []const u8, permission_denied: bool },
+    out_of_memory,
+};
+
+const ISSUES_URL = "https://github.com/hidetzu/zemo/issues";
+const RELEASES_URL = "https://github.com/hidetzu/zemo/releases/latest";
+
+const LOCAL_CERTIFICATES_HINT =
+    "      Check the system certificate store (for example the ca-certificates package)\n";
+const LOCAL_CERTIFICATES_CHECK =
+    "zemo: could not load this machine's CA certificates, so api.github.com could not be verified.\n" ++
+    LOCAL_CERTIFICATES_HINT ++ "      and try again.\n";
+const LOCAL_CERTIFICATES_DOWNLOAD =
+    "zemo: could not load this machine's CA certificates, so github.com could not be verified.\n" ++
+    LOCAL_CERTIFICATES_HINT ++ "      and try again. The installed zemo is unchanged.\n";
+
+/// `zemo: GitHub answered HTTP 400 (bad_request)` まで書く。
+/// ⚠ `std.http.Status` は非網羅 enum。名前の無い値 (599 など) に `@tagName` を当てるとパニックする。
+///   名前が無ければ数字だけを書く。
+fn writeHttpStatus(w: *Io.Writer, status: std.http.Status) !void {
+    try w.print("zemo: GitHub answered HTTP {d}", .{@backingInt(status)});
+    if (std.enums.tagName(std.http.Status, status)) |name| try w.print(" ({s})", .{name});
+}
+
+/// ⚠ 置き換える前に止まったときは「今の zemo はそのまま」と言う。言えるのはその場合だけ。
+fn reportUpgradeFailure(stderr: *Io.Writer, failure: UpgradeFailure) !u8 {
+    switch (failure) {
+        .check => |f| switch (f) {
+            .no_connection => try stderr.writeAll(
+                "zemo: could not reach api.github.com to check the latest release.\n" ++
+                    "      Check the network connection and try again.\n",
+            ),
+            .local_certificates => try stderr.writeAll(LOCAL_CERTIFICATES_CHECK),
+            .http_status => |status| {
+                try writeHttpStatus(stderr, status);
+                try stderr.writeAll(" when asked for the latest release.\n      Try again later.\n");
+            },
+            .unreadable => return reportUpgradeFailure(stderr, .release_unreadable),
+            .out_of_memory => return reportUpgradeFailure(stderr, .out_of_memory),
+        },
+        .release_unreadable => try stderr.writeAll(
+            "zemo: the latest-release information from GitHub could not be read.\n" ++
+                "      Try again later; if it keeps failing, report it at\n" ++
+                "      " ++ ISSUES_URL ++ "\n",
+        ),
+        .unsupported_target => try stderr.writeAll(
+            "zemo: there is no prebuilt zemo for this platform (musl Linux and others).\n" ++
+                "      Build it from source instead: see README \"From source\".\n",
+        ),
+        .asset_missing => |asset| try stderr.print(
+            "zemo: the latest release has no {s}.\n" ++
+                "      Try again later; if it keeps failing, report it at " ++ ISSUES_URL ++ "\n",
+            .{asset},
+        ),
+        .download => |d| switch (d.failure) {
+            .no_connection => try stderr.print(
+                "zemo: could not reach github.com to download {s}.\n" ++
+                    "      Check the network connection and try again. The installed zemo is unchanged.\n",
+                .{d.asset},
+            ),
+            .local_certificates => try stderr.writeAll(LOCAL_CERTIFICATES_DOWNLOAD),
+            .http_status => |status| {
+                try writeHttpStatus(stderr, status);
+                try stderr.print(" for {s}.\n      Try again later. The installed zemo is unchanged.\n", .{d.asset});
+            },
+            .unreadable => try stderr.print(
+                "zemo: the answer from GitHub for {s} could not be read.\n" ++
+                    "      Try again later. The installed zemo is unchanged.\n",
+                .{d.asset},
+            ),
+            .out_of_memory => return reportUpgradeFailure(stderr, .out_of_memory),
+        },
+        .archive_unreadable => try stderr.writeAll(
+            "zemo: the downloaded archive could not be unpacked.\n" ++
+                "      The installed zemo is unchanged. Report it at " ++ ISSUES_URL ++ "\n",
+        ),
+        .archive_without_binary => try stderr.writeAll(
+            "zemo: the downloaded archive has no zemo binary in it.\n" ++
+                "      The installed zemo is unchanged. Report it at " ++ ISSUES_URL ++ "\n",
+        ),
+        .install_path_unknown => try stderr.writeAll(
+            "zemo: could not find where this zemo is installed.\n" ++
+                "      Download the release by hand: " ++ RELEASES_URL ++ "\n",
+        ),
+        .replace => |r| try stderr.print(
+            "zemo: could not replace {s}{s}.\n" ++
+                "      Re-run with permission to write there, or download the release by hand:\n" ++
+                "      " ++ RELEASES_URL ++ "\n",
+            .{ r.path, if (r.permission_denied) " (permission denied)" else "" },
+        ),
+        .out_of_memory => try stderr.writeAll("zemo: ran out of memory during upgrade. The installed zemo is unchanged.\n"),
+    }
+    return 1;
+}
+
+/// 配布物の中から、このプラットフォーム向けのアセットを選ぶ。
+/// ⚠ 「このプラットフォーム向けは作っていない」と「作っているがこのリリースに無い」は別の答え。
+const AssetChoice = union(enum) {
+    found: struct { asset: []const u8, url: []const u8 },
+    failure: UpgradeFailure,
+};
+
+fn resolveAsset(info: upgrade.ReleaseInfo, asset_name: upgrade.AssetError![]const u8) AssetChoice {
+    const asset = asset_name catch return .{ .failure = .unsupported_target };
+    const url = upgrade.findAssetUrl(info, asset) orelse return .{ .failure = .{ .asset_missing = asset } };
+    return .{ .found = .{ .asset = asset, .url = url } };
+}
+
+/// 置き換えのエラーを振り分ける。⚠ 「権限がない」と言えるのはその errno のときだけ。
+fn replaceFailure(path: []const u8, err: anyerror) UpgradeFailure {
+    return .{ .replace = .{
+        .path = path,
+        .permission_denied = err == error.AccessDenied or err == error.PermissionDenied,
+    } };
+}
+
+/// ⚠ メモリ不足は「読めなかった」「見つからなかった」ではない。そう言うと別の原因を探させる。
+fn unlessOutOfMemory(err: anyerror, otherwise: UpgradeFailure) UpgradeFailure {
+    return if (err == error.OutOfMemory) .out_of_memory else otherwise;
+}
+
+/// 展開のエラーを振り分ける。⚠ 「入っていない」と「開けない」は別の答え。
+fn extractFailure(err: anyerror) UpgradeFailure {
+    return switch (err) {
+        error.BinaryNotFoundInArchive => .archive_without_binary,
+        error.OutOfMemory => .out_of_memory,
+        else => .archive_unreadable,
     };
+}
+
+fn doUpgrade(allocator: std.mem.Allocator, io: Io, stdout: *Io.Writer, stderr: *Io.Writer, mode: upgrade.UpgradeMode) !u8 {
+    var fetch_failure: upgrade.FetchFailure = undefined;
+    const json = upgrade.fetchLatestReleaseJson(allocator, io, &fetch_failure) catch
+        return reportUpgradeFailure(stderr, .{ .check = fetch_failure });
     defer allocator.free(json);
 
-    const parsed = upgrade.parseReleaseJson(allocator, json) catch |err| {
-        try stderr.print("zemo: failed to parse GitHub response: {s}\n", .{@errorName(err)});
-        return 1;
-    };
+    const parsed = upgrade.parseReleaseJson(allocator, json) catch |err|
+        return reportUpgradeFailure(stderr, unlessOutOfMemory(err, .release_unreadable));
     defer parsed.deinit();
 
     const cmp = upgrade.compareVersions(VERSION, parsed.value.tag_name);
@@ -575,50 +723,39 @@ fn doUpgrade(allocator: std.mem.Allocator, io: Io, stdout: *Io.Writer, stderr: *
                 },
                 .run => {
                     // 1. 自分のプラットフォーム用アセットの URL を取得
-                    const asset = upgrade.assetName() catch |err| {
-                        try stderr.print("zemo: no prebuilt binary for current target: {s}\n", .{@errorName(err)});
-                        return 1;
+                    const chosen = switch (resolveAsset(parsed.value, upgrade.assetName())) {
+                        .found => |found| found,
+                        .failure => |failure| return reportUpgradeFailure(stderr, failure),
                     };
-                    const url = upgrade.findAssetUrl(parsed.value, asset) orelse {
-                        try stderr.print("zemo: asset '{s}' not found in release\n", .{asset});
-                        return 1;
-                    };
+                    const asset = chosen.asset;
+                    const url = chosen.url;
 
                     // 2. アーカイブをダウンロード
+                    // ⚠ stdout はバッファされている。flush しないと、失敗したときに
+                    //   エラーのあとに「Downloading」が出る。
                     try stdout.print("Downloading {s}...\n", .{asset});
-                    const archive = upgrade.downloadToMemory(allocator, io, url) catch |err| {
-                        try stderr.print("zemo: failed to download: {s}\n", .{@errorName(err)});
-                        return 1;
-                    };
+                    try stdout.flush();
+                    const archive = upgrade.downloadToMemory(allocator, io, url, &fetch_failure) catch
+                        return reportUpgradeFailure(stderr, .{ .download = .{ .asset = asset, .failure = fetch_failure } });
                     defer allocator.free(archive);
 
                     // 3. 先に install_path を解決 (zip 抽出の作業領域として親ディレクトリを使う)
-                    const install_path = upgrade.installPath(allocator, io) catch |err| {
-                        try stderr.print("zemo: failed to resolve install path: {s}\n", .{@errorName(err)});
-                        return 1;
-                    };
+                    const install_path = upgrade.installPath(allocator, io) catch |err|
+                        return reportUpgradeFailure(stderr, unlessOutOfMemory(err, .install_path_unknown));
                     defer allocator.free(install_path);
 
                     // 4. アーカイブ形式に応じてバイナリを取り出す
                     const new_binary = if (std.mem.endsWith(u8, asset, ".zip")) blk: {
-                        const work_dir = std.fs.path.dirname(install_path) orelse {
-                            try stderr.print("zemo: cannot determine working dir from install path: {s}\n", .{install_path});
-                            return 1;
-                        };
-                        break :blk upgrade.extractZemoBinaryFromZip(allocator, io, archive, upgrade.binaryBasename(), work_dir) catch |err| {
-                            try stderr.print("zemo: failed to extract binary: {s}\n", .{@errorName(err)});
-                            return 1;
-                        };
-                    } else upgrade.extractZemoBinary(allocator, archive, upgrade.binaryBasename()) catch |err| {
-                        try stderr.print("zemo: failed to extract binary: {s}\n", .{@errorName(err)});
-                        return 1;
-                    };
+                        const work_dir = std.fs.path.dirname(install_path) orelse
+                            return reportUpgradeFailure(stderr, .install_path_unknown);
+                        break :blk upgrade.extractZemoBinaryFromZip(allocator, io, archive, upgrade.binaryBasename(), work_dir) catch |err|
+                            return reportUpgradeFailure(stderr, extractFailure(err));
+                    } else upgrade.extractZemoBinary(allocator, archive, upgrade.binaryBasename()) catch |err|
+                        return reportUpgradeFailure(stderr, extractFailure(err));
                     defer allocator.free(new_binary);
 
-                    upgrade.replaceBinary(allocator, io, install_path, new_binary) catch |err| {
-                        try stderr.print("zemo: failed to replace binary at {s}: {s}\n", .{ install_path, @errorName(err) });
-                        return 1;
-                    };
+                    upgrade.replaceBinary(allocator, io, install_path, new_binary) catch |err|
+                        return reportUpgradeFailure(stderr, replaceFailure(install_path, err));
 
                     try stdout.print("Upgraded v{s} -> {s}\n", .{ VERSION, parsed.value.tag_name });
                     return 0;
@@ -1508,4 +1645,192 @@ test "writeFileReplacing: replaces the file and leaves no temp behind" {
     const temp_path = try std.fmt.allocPrint(a, "{s}.tmp", .{file_path});
     defer a.free(temp_path);
     try std.testing.expectError(error.FileNotFound, Io.Dir.accessAbsolute(io, temp_path, .{}));
+}
+
+// ---- upgrade failure wording ----
+
+fn upgradeFailureText(buf: []u8, failure: UpgradeFailure) ![]const u8 {
+    var w = Io.Writer.fixed(buf);
+    const code = try reportUpgradeFailure(&w, failure);
+    try std.testing.expectEqual(@as(u8, 1), code);
+    return w.buffered();
+}
+
+test "reportUpgradeFailure: download unreachable says check the network and nothing changed" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: could not reach github.com to download zemo-x86_64-linux-gnu.tar.gz.\n" ++
+            "      Check the network connection and try again. The installed zemo is unchanged.\n",
+        try upgradeFailureText(&buf, .{ .download = .{ .asset = "zemo-x86_64-linux-gnu.tar.gz", .failure = .no_connection } }),
+    );
+}
+
+test "reportUpgradeFailure: download HTTP error names the status, never an error name" {
+    var buf: [512]u8 = undefined;
+    const text = try upgradeFailureText(&buf, .{ .download = .{ .asset = "zemo-x86_64-linux-gnu.tar.gz", .failure = .{ .http_status = .bad_request } } });
+    try std.testing.expectEqualStrings(
+        "zemo: GitHub answered HTTP 400 (bad_request) for zemo-x86_64-linux-gnu.tar.gz.\n" ++
+            "      Try again later. The installed zemo is unchanged.\n",
+        text,
+    );
+    try std.testing.expect(std.mem.indexOf(u8, text, "HttpRequestFailed") == null);
+}
+
+test "reportUpgradeFailure: download answer unreadable is not reported as unreachable" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: the answer from GitHub for zemo.zip could not be read.\n" ++
+            "      Try again later. The installed zemo is unchanged.\n",
+        try upgradeFailureText(&buf, .{ .download = .{ .asset = "zemo.zip", .failure = .unreadable } }),
+    );
+}
+
+test "reportUpgradeFailure: latest-release check, by outcome" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: could not reach api.github.com to check the latest release.\n" ++
+            "      Check the network connection and try again.\n",
+        try upgradeFailureText(&buf, .{ .check = .no_connection }),
+    );
+    try std.testing.expectEqualStrings(
+        "zemo: GitHub answered HTTP 503 (service_unavailable) when asked for the latest release.\n" ++
+            "      Try again later.\n",
+        try upgradeFailureText(&buf, .{ .check = .{ .http_status = .service_unavailable } }),
+    );
+    // ⚠ HTTP として読めない答えは、JSON として読めない答えと同じ次の一手になる
+    try std.testing.expectEqualStrings(
+        try upgradeFailureText(&buf, .release_unreadable),
+        try upgradeFailureText(buf[256..], .{ .check = .unreadable }),
+    );
+}
+
+test "reportUpgradeFailure: release info unreadable points at the issue tracker" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: the latest-release information from GitHub could not be read.\n" ++
+            "      Try again later; if it keeps failing, report it at\n" ++
+            "      https://github.com/hidetzu/zemo/issues\n",
+        try upgradeFailureText(&buf, .release_unreadable),
+    );
+}
+
+test "reportUpgradeFailure: unsupported target points at building from source" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: there is no prebuilt zemo for this platform (musl Linux and others).\n" ++
+            "      Build it from source instead: see README \"From source\".\n",
+        try upgradeFailureText(&buf, .unsupported_target),
+    );
+}
+
+test "reportUpgradeFailure: an asset missing from the release is not 'unreadable'" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: the latest release has no zemo-aarch64-macos.tar.gz.\n" ++
+            "      Try again later; if it keeps failing, report it at https://github.com/hidetzu/zemo/issues\n",
+        try upgradeFailureText(&buf, .{ .asset_missing = "zemo-aarch64-macos.tar.gz" }),
+    );
+}
+
+test "reportUpgradeFailure: archive without a binary and an unreadable archive are two sentences" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: the downloaded archive has no zemo binary in it.\n" ++
+            "      The installed zemo is unchanged. Report it at https://github.com/hidetzu/zemo/issues\n",
+        try upgradeFailureText(&buf, .archive_without_binary),
+    );
+    try std.testing.expectEqualStrings(
+        "zemo: the downloaded archive could not be unpacked.\n" ++
+            "      The installed zemo is unchanged. Report it at https://github.com/hidetzu/zemo/issues\n",
+        try upgradeFailureText(&buf, .archive_unreadable),
+    );
+}
+
+test "reportUpgradeFailure: replace says permission denied only when it was" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: could not replace /home/me/.local/bin/zemo (permission denied).\n" ++
+            "      Re-run with permission to write there, or download the release by hand:\n" ++
+            "      https://github.com/hidetzu/zemo/releases/latest\n",
+        try upgradeFailureText(&buf, .{ .replace = .{ .path = "/home/me/.local/bin/zemo", .permission_denied = true } }),
+    );
+    try std.testing.expectEqualStrings(
+        "zemo: could not replace /home/me/.local/bin/zemo.\n" ++
+            "      Re-run with permission to write there, or download the release by hand:\n" ++
+            "      https://github.com/hidetzu/zemo/releases/latest\n",
+        try upgradeFailureText(&buf, .{ .replace = .{ .path = "/home/me/.local/bin/zemo", .permission_denied = false } }),
+    );
+}
+
+test "reportUpgradeFailure: install path unknown and out of memory" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: could not find where this zemo is installed.\n" ++
+            "      Download the release by hand: https://github.com/hidetzu/zemo/releases/latest\n",
+        try upgradeFailureText(&buf, .install_path_unknown),
+    );
+    try std.testing.expectEqualStrings(
+        "zemo: ran out of memory during upgrade. The installed zemo is unchanged.\n",
+        try upgradeFailureText(&buf, .{ .download = .{ .asset = "x", .failure = .out_of_memory } }),
+    );
+}
+
+test "extractFailure: a missing binary and a broken archive are told apart" {
+    try std.testing.expectEqual(UpgradeFailure.archive_without_binary, extractFailure(error.BinaryNotFoundInArchive));
+    try std.testing.expectEqual(UpgradeFailure.archive_unreadable, extractFailure(error.ZipBadFileOffset));
+    try std.testing.expectEqual(UpgradeFailure.out_of_memory, extractFailure(error.OutOfMemory));
+}
+
+test "resolveAsset: unsupported target, missing asset and found are three answers" {
+    var assets = [_]upgrade.Asset{.{ .name = "zemo-x86_64-linux-gnu.tar.gz", .browser_download_url = "https://example.invalid/a" }};
+    const info: upgrade.ReleaseInfo = .{ .tag_name = "v9.9.9", .assets = &assets };
+
+    try std.testing.expectEqual(UpgradeFailure.unsupported_target, resolveAsset(info, error.UnsupportedTarget).failure);
+    try std.testing.expectEqualStrings("zemo-x86_64-macos.tar.gz", resolveAsset(info, "zemo-x86_64-macos.tar.gz").failure.asset_missing);
+    const found = resolveAsset(info, "zemo-x86_64-linux-gnu.tar.gz").found;
+    try std.testing.expectEqualStrings("https://example.invalid/a", found.url);
+}
+
+test "replaceFailure: permission denied only for the permission errors" {
+    try std.testing.expect(replaceFailure("/p", error.AccessDenied).replace.permission_denied);
+    try std.testing.expect(replaceFailure("/p", error.PermissionDenied).replace.permission_denied);
+    try std.testing.expect(!replaceFailure("/p", error.NoSpaceLeft).replace.permission_denied);
+    try std.testing.expectEqualStrings("/p", replaceFailure("/p", error.NoSpaceLeft).replace.path);
+}
+
+test "unlessOutOfMemory: out of memory is never reported as unreadable or unknown" {
+    try std.testing.expectEqual(UpgradeFailure.out_of_memory, unlessOutOfMemory(error.OutOfMemory, .release_unreadable));
+    try std.testing.expectEqual(UpgradeFailure.release_unreadable, unlessOutOfMemory(error.SyntaxError, .release_unreadable));
+    try std.testing.expectEqual(UpgradeFailure.install_path_unknown, unlessOutOfMemory(error.FileNotFound, .install_path_unknown));
+}
+
+test "reportUpgradeFailure: an HTTP status with no name prints the number, never panics" {
+    var buf: [512]u8 = undefined;
+    const unnamed: std.http.Status = @fromBackingInt(599);
+    try std.testing.expectEqualStrings(
+        "zemo: GitHub answered HTTP 599 for zemo-x86_64-linux-gnu.tar.gz.\n" ++
+            "      Try again later. The installed zemo is unchanged.\n",
+        try upgradeFailureText(&buf, .{ .download = .{ .asset = "zemo-x86_64-linux-gnu.tar.gz", .failure = .{ .http_status = unnamed } } }),
+    );
+    try std.testing.expectEqualStrings(
+        "zemo: GitHub answered HTTP 599 when asked for the latest release.\n" ++
+            "      Try again later.\n",
+        try upgradeFailureText(&buf, .{ .check = .{ .http_status = unnamed } }),
+    );
+}
+
+test "reportUpgradeFailure: unreadable CA certificates point at this machine, not the network" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: could not load this machine's CA certificates, so github.com could not be verified.\n" ++
+            "      Check the system certificate store (for example the ca-certificates package)\n" ++
+            "      and try again. The installed zemo is unchanged.\n",
+        try upgradeFailureText(&buf, .{ .download = .{ .asset = "zemo-x86_64-linux-gnu.tar.gz", .failure = .local_certificates } }),
+    );
+    try std.testing.expectEqualStrings(
+        "zemo: could not load this machine's CA certificates, so api.github.com could not be verified.\n" ++
+            "      Check the system certificate store (for example the ca-certificates package)\n" ++
+            "      and try again.\n",
+        try upgradeFailureText(&buf, .{ .check = .local_certificates }),
+    );
 }
