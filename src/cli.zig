@@ -353,9 +353,10 @@ fn printFile(io: Io, file_path: []const u8, stdout: *Io.Writer, stderr: *Io.Writ
 }
 
 /// ファイルの中身を `w` にそのまま書く。
-/// ⚠ `Reader.streamRemaining` に stdio の writer を渡さない。sendfile が使えない出力先
-///   (Linux の `>>`、そして std の実装上 macOS / Windows) では書き込み側のバッファを要求し、
-///   バッファを持たない stdioWriter だとパニックする (hidetzu/zemo#27 のレビュー)。
+/// ⚠ `Reader.streamRemaining` に stdio の writer を渡さない。sendfile / copy_file_range が使えない
+///   出力先 (Linux の `>>`、そして std の実装上 macOS / Windows) では、ReleaseSafe だと書き込み側の
+///   バッファを要求してパニックし (バッファを持たない stdioWriter)、Debug だと copy_file_range の
+///   EBADF をバグとしてパニックする (hidetzu/zemo#27 のレビュー)。
 fn copyFileTo(io: Io, file: Io.File, w: *Io.Writer) !void {
     var buf: [4096]u8 = undefined;
     var offset: u64 = 0;
@@ -1878,8 +1879,9 @@ fn openAppendForTest(dir: Io.Dir, name: []const u8) !Io.File {
     return .{ .handle = fd, .flags = .{ .nonblocking = false } };
 }
 
-test "printFile: an unbuffered writer on an append-mode file gets the whole file" {
-    // ⚠ `zemo cat t >> f` の再現。streamRemaining だとここでパニックした。
+test "printFile: an append-mode file gets the whole file through the stdio writer" {
+    // ⚠ `zemo cat t >> f` の再現。streamRemaining だとここでパニックした
+    //   (Debug では copy_file_range の EBADF。バッファの有無は区別しない — それは verify § 2 が見る)。
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
@@ -1911,7 +1913,7 @@ test "printFile: an unbuffered writer on an append-mode file gets the whole file
     try std.testing.expectEqualStrings(body, read_buf[0..n]);
 }
 
-test "dumpMemos: an unbuffered writer on an append-mode file gets every section" {
+test "dumpMemos: an append-mode file gets every section through the stdio writer" {
     // ⚠ `zemo dump >> f` の再現。streamRemaining だと最初の見出しのあとでパニックした。
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     const io = std.testing.io;

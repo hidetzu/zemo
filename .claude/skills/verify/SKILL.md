@@ -194,11 +194,12 @@ for pair in "both.txt:2 -> 3" "stdout.txt:3 -> 4" "append-both.txt:4 -> 5" "appe
                                                             # expect: in order
 done
 
-# ⚠ push refused — zemo's own line before git's run, zemo's own error last (hidetzu/zemo#26)
+# ⚠ push refused — zemo's own line before git's commit, zemo's own error last (hidetzu/zemo#26)
 chmod -R a-w "$WORK/remote.git"
 "$BIN" ideas:priority zig-lsp-server 2 > "$WORK/refused.txt" 2>&1; echo "exit=$?"   # expect: exit=1
-awk -v z="zig-lsp-server: priority 1 -> 2" '$0 == z { m = NR } /^zemo: .*push/ { e = NR }
-  END { print (m && e && m < e && e >= NR - 1) ? "in order" : "OUT OF ORDER" }' "$WORK/refused.txt"
+awk -v z="zig-lsp-server: priority 1 -> 2" -v c="docs(ideas): zig-lsp-server priority 1 -> 2" \
+  '$0 == z { m = NR } index($0, c) { k = NR } /^zemo: .*push/ { e = NR }
+   END { print (m && k && e && m < k && k < e && e >= NR - 1) ? "in order" : "OUT OF ORDER" }' "$WORK/refused.txt"
                                                             # expect: in order
 chmod -R u+w "$WORK/remote.git"
 ```
