@@ -152,11 +152,23 @@ const CASES = [
           if (!line.includes("setup-zig@")) return;
           // `- uses: …` opens the step at the dash; `uses: …` under `- name:` sits two deeper.
           const step = line.trimStart().startsWith("- ") ? indent(line) : indent(line) - 2;
+          // ⚠ Only `version:` directly under this step's own `with:` counts — a `version:` under
+          //   `env:` or anywhere else in the step is not what setup-zig reads.
+          const key = step + 2;
           let version = null;
           for (let j = i + 1; j < lines.length; j++) {
             if (lines[j].trim() && indent(lines[j]) <= step) break;
-            const m = /^\s*version:\s*["']?([^"'\s#]+)["']?/.exec(lines[j]);
-            if (m) { version = m[1]; break; }
+            if (indent(lines[j]) !== key || !/^\s*with:\s*(#.*)?$/.test(lines[j])) continue;
+            let child = null;
+            for (let k = j + 1; k < lines.length; k++) {
+              if (!lines[k].trim()) continue;
+              if (indent(lines[k]) <= key) break;
+              child ??= indent(lines[k]);
+              if (indent(lines[k]) !== child) continue;
+              const m = /^\s*version:\s*["']?([^"'\s#]+)["']?/.exec(lines[k]);
+              if (m) { version = m[1]; break; }
+            }
+            break;
           }
           if (!version) throw new Error(`${f}:${i + 1} has a setup-zig step with no version this case can read`);
           steps++; found.push([f, version]);
