@@ -170,30 +170,35 @@ before=$(git -C "$WORK/memo" rev-parse HEAD)
 "$BIN" ideas:status zig-lsp-server prioritized      # the status it already has
 test "$before" = "$(git -C "$WORK/memo" rev-parse HEAD)"   # ⚠ expect: no new commit
 
-# ⚠ stdout and stderr sharing one file — git pull's line, git commit's line and zemo's line
-#   must each survive (order is not asserted: zemo's stdout is flushed at exit)
+# ⚠ stdout and stderr sharing one file, and a pipe — git pull's line, zemo's line and git
+#   commit's line must each appear once, in the order they happened (hidetzu/zemo#23, #26)
 "$BIN" ideas:priority zig-lsp-server 3 > "$WORK/both.txt" 2>&1
 "$BIN" ideas:priority zig-lsp-server 4 > "$WORK/stdout.txt"
 : > "$WORK/append-both.txt"; "$BIN" ideas:priority zig-lsp-server 5 >> "$WORK/append-both.txt" 2>&1
 : > "$WORK/append.txt";      "$BIN" ideas:priority zig-lsp-server - >> "$WORK/append.txt"
-for pair in "both.txt:2 -> 3" "stdout.txt:3 -> 4" "append-both.txt:4 -> 5" "append.txt:5 -> unranked"; do
+"$BIN" ideas:priority zig-lsp-server 1 2>&1 | cat > "$WORK/pipe.txt"
+for pair in "both.txt:2 -> 3" "stdout.txt:3 -> 4" "append-both.txt:4 -> 5" "append.txt:5 -> unranked" "pipe.txt:unranked -> 1"; do
   f="$WORK/${pair%%:*}"; t="${pair#*:}"
-  grep -c '^Already up to date\.$' "$f"                    # expect: 1 (git pull, written first)
-  grep -c "docs(ideas): zig-lsp-server priority $t" "$f"   # expect: 1 (git commit)
+  grep -c '^Already up to date\.$' "$f"                    # expect: 1 (git pull)
   grep -c "^zig-lsp-server: priority $t\$" "$f"            # expect: 1 (zemo)
+  grep -c "docs(ideas): zig-lsp-server priority $t" "$f"   # expect: 1 (git commit)
+  awk -v z="zig-lsp-server: priority $t" -v c="docs(ideas): zig-lsp-server priority $t" \
+    '$0 == "Already up to date." { p = NR } $0 == z { m = NR } index($0, c) { k = NR }
+     END { print (p && m && k && p < m && m < k) ? "in order" : "OUT OF ORDER" }' "$f"
+                                                            # expect: in order
 done
 ```
 
-⚠ **The redirect case is hidetzu/zemo#23.** ⚠ **With positional stdout/stderr writers, zemo's line
-landed at offset 0 over git's output and lines were lost** — ⚠ **observed on `f7161dd`,
-2026-10-18.** ⚠ **A pipe does not show it; only a regular file does.**
+⚠ **The redirect case is hidetzu/zemo#23; the order is hidetzu/zemo#26.**
+⚠ **With positional stdout/stderr writers, zemo's line landed at offset 0 over git's output and
+lines were lost** — ⚠ **observed on `f7161dd`, 2026-10-18.** ⚠ **A pipe does not show that; only
+a regular file does.**
+⚠ **With buffered writers, zemo's line came after git's commit and push, on a file and on a pipe
+alike** — ⚠ **observed on `bcfc767`, 2026-10-18.** ⚠ **Every case here, including the two `>>`
+runs and the pipe, can fail for that.**
 ⚠ **`Already up to date.` is git's wording, not ours** — ⚠ **observed with git 2.56.0.** ⚠ **If it
 reads 0 under another git, look at what git printed before blaming zemo.**
-⚠ **The two `>>` runs cannot fail for hidetzu/zemo#23** — ⚠ **an append-mode file ignores the
-writer's offset, so main passes them too (measured).** ⚠ **They guard the claim in `docs/SPEC.md`,
-not that bug.**
-⚠ **Each file must hold all three lines once — ⚠ git's first line is the one an overwrite at offset 0 destroys, so it is the one that has to be asserted.** ⚠ **Never assert their order** — ⚠ **that would pin the
-current buffering, which `docs/SPEC.md` does not claim.**
+⚠ **Each file must hold all three lines once, in that order** — ⚠ **git's first line is the one an overwrite at offset 0 destroys, and zemo's line is the one buffering moves.**
 
 - ⚠ **Depend on nobody's uptime** (contract). ⚠ **The remote is a local bare repo, never a host.**
 - ⚠ **`git` failing is still a `FAIL`** — ⚠ **and it is `external`, not evidence that our code broke.**

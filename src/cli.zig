@@ -152,8 +152,12 @@ const VERSION = "0.4.0";
 /// ⚠ streaming で開く。`.init` は positional で、writer ごとに自分の位置 0 から書く。
 ///   `zemo … > f 2>&1` で stdout と stderr が同じファイルを指すと、互いに上書きして行が消える
 ///   (hidetzu/zemo#23)。streaming は OS の共有の書き込み位置を使う。
-fn stdioWriter(file: Io.File, io: Io, buffer: []u8) Io.File.Writer {
-    return .initStreaming(file, io, buffer);
+/// ⚠ バッファを持たない。書いたらその場で出る。バッファすると zemo の行が終了時まで残り、
+///   git の出力や自分の stderr より後ろに出る (hidetzu/zemo#26)。
+///   flush を呼び出し側に覚えさせない — git やエディタを呼ぶ箇所は増える。
+///   代償 (書き込み回数が増える) は条件付きで hidetzu/zemo#26 に測ってある。
+fn stdioWriter(file: Io.File, io: Io) Io.File.Writer {
+    return .initStreaming(file, io, &.{});
 }
 
 /// CLI のエントリ。終了コードを返す。
@@ -163,13 +167,11 @@ pub fn run(
     env: *const std.process.Environ.Map,
     args: []const []const u8,
 ) !u8 {
-    var stdout_buf: [1024]u8 = undefined;
-    var stdout_w = stdioWriter(.stdout(), io, &stdout_buf);
+    var stdout_w = stdioWriter(.stdout(), io);
     const stdout = &stdout_w.interface;
     defer stdout.flush() catch {};
 
-    var stderr_buf: [1024]u8 = undefined;
-    var stderr_w = stdioWriter(.stderr(), io, &stderr_buf);
+    var stderr_w = stdioWriter(.stderr(), io);
     const stderr = &stderr_w.interface;
     defer stderr.flush() catch {};
 
@@ -1843,27 +1845,23 @@ test "reportUpgradeFailure: unreadable CA certificates point at this machine, no
     );
 }
 
-test "stdioWriter: two writers on one file keep every line, in the order they flush" {
+test "stdioWriter: two writers on one file keep every line, in the order they were written" {
     // `zemo … > f 2>&1` の再現: stdout と stderr が同じファイルを指す。
+    // ⚠ flush しない。書いた順にそのままファイルに出ることを確かめる (hidetzu/zemo#23, #26)。
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const file = try tmp.dir.createFile(io, "out.txt", .{ .read = true });
     defer file.close(io);
 
-    var out_buf: [64]u8 = undefined;
-    var err_buf: [64]u8 = undefined;
-    var out_w = stdioWriter(file, io, &out_buf);
-    var err_w = stdioWriter(file, io, &err_buf);
+    var out_w = stdioWriter(file, io);
+    var err_w = stdioWriter(file, io);
 
-    try out_w.interface.writeAll("Downloading\n");
-    try out_w.interface.flush();
+    try out_w.interface.print("demo: {s} -> {s}\n", .{ "backlog", "prioritized" });
     try err_w.interface.writeAll("zemo: failed\n");
-    try err_w.interface.flush();
     try out_w.interface.writeAll("more\n");
-    try out_w.interface.flush();
 
     var read_buf: [128]u8 = undefined;
     const n = try file.readPositionalAll(io, &read_buf, 0);
-    try std.testing.expectEqualStrings("Downloading\nzemo: failed\nmore\n", read_buf[0..n]);
+    try std.testing.expectEqualStrings("demo: backlog -> prioritized\nzemo: failed\nmore\n", read_buf[0..n]);
 }
