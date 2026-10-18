@@ -50,7 +50,7 @@ directory.** ⚠ **`..`, `/` and `\` escape that directory.**
 ⚠ **Grounds: `git.zig` runs `add -A`, `commit` and `push` in whatever `ZEMO_DIR` names.**
 ⚠ **That directory holds the user's notes and nothing of ours.**
 
-- MUST: ⚠ **Confirm the directory is a work-tree *root* before staging** — `isGitRepo` compares
+- MUST: ⚠ **Confirm the directory is a work-tree *root* before staging** — `repoAt` compares
   `rev-parse --show-toplevel` against the real path. ⚠ **A subdirectory of a repository would
   make `add -A` sweep the parent repository in.**
 - MUST NOT: ⚠ **Never run a git operation that rewrites or discards history there** — no `reset`,

@@ -219,6 +219,22 @@ reads 0 under another git, look at what git printed before blaming zemo.**
 - ⚠ **`git` failing is still a `FAIL`** — ⚠ **and it is `external`, not evidence that our code broke.**
   ⚠ Say which side failed.
 - ⚠ **A missing `git` is `NOT-VERIFIED` for this tier**, ⚠ never a silent skip.
+- ⚠ **`git` not on `PATH` is checked on purpose** (hidetzu/zemo#25) — ⚠ **with a `PATH` that
+  holds only the editor, so it is the absence that is measured:**
+
+```sh
+NOGIT="$(mktemp -d)"
+printf '#!/bin/sh\nexit 0\n' > "$NOGIT/ed"; chmod +x "$NOGIT/ed"   # ⚠ not `ln -s "$(command -v true)"`: `true` is a shell builtin
+PATH="$NOGIT" "$BIN" sync; echo "exit=$?"                       # expect: "git is not installed or not on PATH, so <memo> cannot be synced", exit=1
+PATH="$NOGIT" ZEMO_EDITOR="$NOGIT/ed" "$BIN"; echo "exit=$?"    # expect: "…your note is saved in <memo> but not committed", exit=1
+PLAIN="$(mktemp -d)"
+ZEMO_DIR="$PLAIN" PATH="$NOGIT" ZEMO_EDITOR="$NOGIT/ed" "$BIN"; echo "exit=$?"   # expect: nothing printed, exit=0 (no .git: no sync, as before)
+```
+
+⚠ **Observed on 2026-10-18 while writing this step**: ⚠ **`ln -s "$(command -v true)"` made `true -> true`
+(the builtin's name, not a path), the editor could not start, and zemo printed `error: FileSystem`** —
+⚠ **a broken fixture, and separately an error name reaching the user from the editor launch (not this
+step's subject).**
 
 ---
 

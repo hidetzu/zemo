@@ -20,29 +20,48 @@ fn run(io: Io, argv: []const []const u8, opt: RunOpt) !u8 {
     };
 }
 
+/// memo ディレクトリが git から見て何か。
+/// ⚠ 「git が起動できない」と「work tree のルートではない」は別の答え。前者を後者と言うと、
+///   git を入れれば直るのに「repo ではない」と読ませることになる (CLAUDE.md §4-1)。
+pub const Repo = enum { root, not_root, git_missing };
+
+/// `git rev-parse` を起動できなかったときの答え。
+/// ⚠ `git_missing` は、実行ファイルが無く、かつ `<dir>/.git` がある (同期するはずの memo) ときだけ。
+///   `.git` の無い memo は git があっても同期しない設定なので、git が無くても `.not_root` のまま。
+///   ここを取り違えると、git を入れていない人の同期しない memo が毎回失敗する。
+pub fn classifyProbeError(err: anyerror, dot_git_exists: bool) Repo {
+    return if (err == error.FileNotFound and dot_git_exists) .git_missing else .not_root;
+}
+
 /// `dir` が git work tree のルートかを判定する。
-/// 通常 repo / git worktree / submodule のルートは true、親 repo 配下の
-/// 通常ディレクトリは false（誤って親 repo に対して `git add -A` するのを防ぐ）。
-pub fn isGitRepo(allocator: std.mem.Allocator, io: Io, dir: []const u8) bool {
+/// 通常 repo / git worktree / submodule のルートは `.root`、親 repo 配下の
+/// 通常ディレクトリは `.not_root`（誤って親 repo に対して `git add -A` するのを防ぐ）。
+pub fn repoAt(allocator: std.mem.Allocator, io: Io, dir: []const u8) Repo {
     // git の認識する work tree の最上位を取得
     const argv = [_][]const u8{ "git", "-C", dir, "rev-parse", "--show-toplevel" };
-    const result = std.process.run(allocator, io, .{ .argv = &argv }) catch return false;
+    const result = std.process.run(allocator, io, .{ .argv = &argv }) catch |err| {
+        // `.git` は worktree ではファイル、通常はディレクトリ。どちらでも「ある」。
+        const dot_git = std.fs.path.join(allocator, &.{ dir, ".git" }) catch return .not_root;
+        defer allocator.free(dot_git);
+        const exists = if (Io.Dir.accessAbsolute(io, dot_git, .{})) |_| true else |_| false;
+        return classifyProbeError(err, exists);
+    };
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
     switch (result.term) {
-        .exited => |code| if (code != 0) return false,
-        else => return false,
+        .exited => |code| if (code != 0) return .not_root,
+        else => return .not_root,
     }
 
     const toplevel = std.mem.trimEnd(u8, result.stdout, "\r\n");
 
     // dir 側の正規化されたパスを取得
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const len = Io.Dir.realPathFileAbsolute(io, dir, &buf) catch return false;
+    const len = Io.Dir.realPathFileAbsolute(io, dir, &buf) catch return .not_root;
     const dir_real = buf[0..len];
 
-    return std.mem.eql(u8, toplevel, dir_real);
+    return if (std.mem.eql(u8, toplevel, dir_real)) .root else .not_root;
 }
 
 pub fn pull(io: Io, dir: []const u8) !void {
@@ -77,11 +96,11 @@ pub fn push(io: Io, dir: []const u8) !void {
     _ = try run(io, &argv, .{});
 }
 
-// 否定テスト（`isGitRepo` が non-repo dir で false を返すこと）は、
+// 否定テスト（`repoAt` が non-repo dir で `.not_root` を返すこと）は、
 // std.testing.tmpDir が `.zig-cache/tmp/` 配下を使う関係で zemo 自身の
 // work tree 内に入ってしまい、`git rev-parse` が常に true を返すため省略。
 
-test "isGitRepo: returns true after git init at repo root" {
+test "repoAt: root after git init at repo root" {
     const io = std.testing.io;
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -99,10 +118,10 @@ test "isGitRepo: returns true after git init at repo root" {
     });
     _ = try init_child.wait(io);
 
-    try std.testing.expect(isGitRepo(a, io, path));
+    try std.testing.expectEqual(Repo.root, repoAt(a, io, path));
 }
 
-test "isGitRepo: returns false for subdir of a repo (not root)" {
+test "repoAt: not_root for subdir of a repo" {
     const io = std.testing.io;
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -124,5 +143,12 @@ test "isGitRepo: returns false for subdir of a repo (not root)" {
     const sub = try std.fs.path.join(a, &.{ path, "subdir" });
     defer a.free(sub);
 
-    try std.testing.expect(!isGitRepo(a, io, sub));
+    try std.testing.expectEqual(Repo.not_root, repoAt(a, io, sub));
+}
+
+test "classifyProbeError: git_missing only when git is absent and .git is there" {
+    try std.testing.expectEqual(Repo.git_missing, classifyProbeError(error.FileNotFound, true));
+    try std.testing.expectEqual(Repo.not_root, classifyProbeError(error.FileNotFound, false));
+    try std.testing.expectEqual(Repo.not_root, classifyProbeError(error.AccessDenied, true));
+    try std.testing.expectEqual(Repo.not_root, classifyProbeError(error.OutOfMemory, true));
 }
