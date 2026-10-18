@@ -105,6 +105,14 @@ pub fn classifyFetchError(err: anyerror) FetchFailure {
     return .unreadable;
 }
 
+/// このマシンの CA 証明書を読んだ結果を判定する。
+/// ⚠ 証明書が 1 件も無いと、std はエラーを返さず空のまま進み、TLS の段階で
+///   `TlsInitializationFailed` になる。それは回線の失敗と見分けがつかないので、接続の前にここで止める。
+pub fn classifyCertificateScan(scanned: bool, count: usize) ?FetchFailure {
+    if (!scanned or count == 0) return .local_certificates;
+    return null;
+}
+
 /// GET して本文を返す。戻り値は呼び出し側が free する。
 fn get(
     allocator: std.mem.Allocator,
@@ -115,6 +123,16 @@ fn get(
 ) FetchError![]u8 {
     var client = std.http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
+
+    // ⚠ CA 証明書は std に任せず先に読む (classifyCertificateScan)。
+    //   `client.now` を入れておくと、std は読み直さずこの束を使う。
+    const now = std.Io.Clock.real.now(io);
+    const scanned = if (client.ca_bundle.rescan(allocator, io, now)) |_| true else |_| false;
+    if (classifyCertificateScan(scanned, client.ca_bundle.map.count())) |f| {
+        failure.* = f;
+        return error.FetchFailed;
+    }
+    client.now = now;
 
     var body = std.Io.Writer.Allocating.init(allocator);
     defer body.deinit();
@@ -493,6 +511,13 @@ test "classifyFetchError: connection-stage errors are no_connection" {
     try std.testing.expectEqual(FetchFailure.no_connection, classifyFetchError(error.ConnectionRefused));
     try std.testing.expectEqual(FetchFailure.no_connection, classifyFetchError(error.UnknownHostName));
     try std.testing.expectEqual(FetchFailure.no_connection, classifyFetchError(error.TlsInitializationFailed));
+}
+
+test "classifyCertificateScan: no certificates at all is this machine's, not the network's" {
+    try std.testing.expectEqual(FetchFailure.local_certificates, classifyCertificateScan(true, 0).?);
+    try std.testing.expectEqual(FetchFailure.local_certificates, classifyCertificateScan(false, 0).?);
+    try std.testing.expectEqual(FetchFailure.local_certificates, classifyCertificateScan(false, 12).?);
+    try std.testing.expect(classifyCertificateScan(true, 1) == null);
 }
 
 test "classifyFetchError: an unreadable CA bundle is this machine's, not the network's" {
