@@ -565,9 +565,10 @@ pub const GitStep = enum { pull, add, diff, commit, push };
 pub const GitFailure = union(enum) {
     /// git は動いて、失敗を返した。git 自身のメッセージは上に出ている。
     failed: struct { step: GitStep, dir: []const u8 },
-    /// git が無い (PATH に無い)。
+    /// git が無い (PATH に無い)、commit より前。⚠ push 時に無いのは `could_not_run` (`gitFailure`)。
     no_git: struct { dir: []const u8, when: enum { sync, after_edit } },
-    /// git を起動できなかった (見つからない以外の理由)。⚠ git のメッセージは出ていない。
+    /// git を起動できなかった (見つからない以外の理由、または push 時に見つからない)。
+    /// ⚠ git のメッセージは出ていない。
     could_not_run: struct { step: GitStep, dir: []const u8 },
 };
 
