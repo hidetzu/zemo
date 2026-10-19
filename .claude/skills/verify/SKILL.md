@@ -234,7 +234,7 @@ ZEMO_DIR="$PLAIN" PATH="$NOGIT" ZEMO_EDITOR="$NOGIT/ed" "$BIN"; echo "exit=$?"  
 ⚠ **Observed on 2026-10-18 while writing this step**: ⚠ **`ln -s "$(command -v true)"` made `true -> true`
 (the builtin's name, not a path), the editor could not start, and zemo printed `error: FileSystem`** —
 ⚠ **a broken fixture, and separately an error name reaching the user from the editor launch (not this
-step's subject).**
+step's subject; it is hidetzu/zemo#28).**
 
 ---
 

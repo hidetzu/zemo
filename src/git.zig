@@ -21,8 +21,10 @@ fn run(io: Io, argv: []const []const u8, opt: RunOpt) !u8 {
 }
 
 /// memo ディレクトリが git から見て何か。
-/// ⚠ 「git が起動できない」と「work tree のルートではない」は別の答え。前者を後者と言うと、
+/// ⚠ 「git が見つからない」と「work tree のルートではない」は別の答え。前者を後者と言うと、
 ///   git を入れれば直るのに「repo ではない」と読ませることになる (CLAUDE.md §4-1)。
+/// ⚠ 見つかったのに起動できない (権限など) は、まだ `.not_root` に畳まれている
+///   (`classifyProbeError`)。main から引き継いだ振る舞いで、ここでは区別していない。
 pub const Repo = enum { root, not_root, git_missing };
 
 /// `git rev-parse` を起動できなかったときの答え。
