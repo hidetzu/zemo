@@ -572,10 +572,16 @@ pub const GitFailure = union(enum) {
 };
 
 /// git 呼び出しのエラーを振り分ける。⚠ pull は編集の前、ほかは編集の後。
+/// ⚠ push の時点では commit 済みなので、git が無くても「not committed」とは言えない。
+///   承認済みの「could not start git push」に寄せる (hidetzu/zemo#25 の owner 判断、2026-10-19)。
 fn gitFailure(step: GitStep, err: anyerror, dir: []const u8) GitFailure {
     return switch (err) {
         error.GitFailed => .{ .failed = .{ .step = step, .dir = dir } },
-        error.GitNotFound => .{ .no_git = .{ .dir = dir, .when = if (step == .pull) .sync else .after_edit } },
+        error.GitNotFound => switch (step) {
+            .pull => .{ .no_git = .{ .dir = dir, .when = .sync } },
+            .push => .{ .could_not_run = .{ .step = step, .dir = dir } },
+            .add, .diff, .commit => .{ .no_git = .{ .dir = dir, .when = .after_edit } },
+        },
         else => .{ .could_not_run = .{ .step = step, .dir = dir } },
     };
 }
@@ -2085,6 +2091,37 @@ test "reportGitFailure: git that could not start never claims git's message is a
         "zemo: could not start git push in /m.\n" ++
             "      Your file is saved; it was not pushed.\n",
         try gitFailureText(&buf, gitFailure(.push, error.AccessDenied, "/m")),
+    );
+}
+
+test "reportGitFailure: git missing after editing says the note is saved, at add and diff too" {
+    var buf: [512]u8 = undefined;
+    inline for (.{ GitStep.add, GitStep.diff }) |step| {
+        try std.testing.expectEqualStrings(
+            "zemo: git is not installed or not on PATH; your note is saved in /m but not committed.\n" ++
+                "      Install git, then run zemo sync.\n",
+            try gitFailureText(&buf, gitFailure(step, error.GitNotFound, "/m")),
+        );
+    }
+}
+
+test "reportGitFailure: git that could not start at add, diff or commit says the file is not committed" {
+    var buf: [512]u8 = undefined;
+    inline for (.{ GitStep.add, GitStep.diff, GitStep.commit }) |step| {
+        try std.testing.expectEqualStrings(
+            "zemo: could not start git " ++ @tagName(step) ++ " in /m.\n" ++
+                "      Your file is saved; it was not committed.\n",
+            try gitFailureText(&buf, gitFailure(step, error.AccessDenied, "/m")),
+        );
+    }
+}
+
+test "reportGitFailure: git missing at push never says the note is not committed" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: could not start git push in /m.\n" ++
+            "      Your file is saved; it was not pushed.\n",
+        try gitFailureText(&buf, gitFailure(.push, error.GitNotFound, "/m")),
     );
 }
 
