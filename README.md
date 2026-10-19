@@ -94,6 +94,7 @@ git remote add origin <your-memo-url>
 ```
 
 If `~/memo/.git` is missing, `zemo` and `zemo <topic>` still open the editor but skip the sync step. `zemo sync` requires the directory to be a git repo.
+If `~/memo/.git` exists but `git` is not installed (or not on `PATH`), `zemo` still saves your note, says it was not committed, and exits with status 1.
 
 Override the location with `ZEMO_DIR` (see [Configuration](#configuration)).
 

@@ -217,9 +217,9 @@ fn openScratch(
 
     // pull はファイル作成より先（リモートに同名ファイルが追加されたケースで
     // 未追跡ファイルが pull を妨げないようにする）
-    const is_repo = git.isGitRepo(allocator, io, dir);
-    if (is_repo) {
-        git.pull(io, dir) catch |err| return reportGit(stderr, "git pull", err);
+    const repo = git.repoAt(allocator, io, dir);
+    if (repo == .root) {
+        git.pull(io, dir) catch |err| return reportGitFailure(stderr, gitFailure(.pull, err, dir));
     }
 
     const file_path = try paths.scratchPath(allocator, dir);
@@ -227,7 +227,7 @@ fn openScratch(
 
     try ensureFile(io, file_path, null);
 
-    return editAndPostSync(allocator, io, env, stderr, dir, file_path, is_repo, .{ .topic = "scratch" });
+    return editAndPostSync(allocator, io, env, stderr, dir, file_path, repo, .{ .topic = "scratch" });
 }
 
 fn openTopic(
@@ -248,9 +248,9 @@ fn openTopic(
     try ensureDir(io, dir);
 
     // pull はファイル作成より先（理由は openScratch 参照）
-    const is_repo = git.isGitRepo(allocator, io, dir);
-    if (is_repo) {
-        git.pull(io, dir) catch |err| return reportGit(stderr, "git pull", err);
+    const repo = git.repoAt(allocator, io, dir);
+    if (repo == .root) {
+        git.pull(io, dir) catch |err| return reportGitFailure(stderr, gitFailure(.pull, err, dir));
     }
 
     const topics_dir = try std.fs.path.join(allocator, &.{ dir, "topics" });
@@ -264,7 +264,7 @@ fn openTopic(
     defer allocator.free(template);
     try ensureFile(io, file_path, template);
 
-    return editAndPostSync(allocator, io, env, stderr, dir, file_path, is_repo, .{ .topic = topic });
+    return editAndPostSync(allocator, io, env, stderr, dir, file_path, repo, .{ .topic = topic });
 }
 
 fn doSync(
@@ -277,16 +277,20 @@ fn doSync(
     const dir = try paths.memoDir(allocator, io, env);
     defer allocator.free(dir);
 
-    if (!git.isGitRepo(allocator, io, dir)) {
-        try stderr.writeAll("zemo: memo dir is not a git repo\n");
-        return 1;
+    switch (git.repoAt(allocator, io, dir)) {
+        .root => {},
+        .git_missing => return reportGitFailure(stderr, .{ .no_git = .{ .dir = dir, .when = .sync } }),
+        .not_root => {
+            try stderr.writeAll("zemo: memo dir is not a git repo\n");
+            return 1;
+        },
     }
 
-    git.pull(io, dir) catch |err| return reportGit(stderr, "git pull", err);
-    git.addAll(io, dir) catch |err| return reportGit(stderr, "git add", err);
+    git.pull(io, dir) catch |err| return reportGitFailure(stderr, gitFailure(.pull, err, dir));
+    git.addAll(io, dir) catch |err| return reportGitFailure(stderr, gitFailure(.add, err, dir));
 
     const has_changes = git.hasStagedChanges(io, dir) catch |err|
-        return reportGit(stderr, "git diff", err);
+        return reportGitFailure(stderr, gitFailure(.diff, err, dir));
 
     if (!has_changes) {
         try stdout.writeAll("No local changes\n");
@@ -298,8 +302,8 @@ fn doSync(
     const msg = try std.fmt.allocPrint(allocator, "chore: sync {s}", .{ts});
     defer allocator.free(msg);
 
-    git.commit(io, dir, msg) catch |err| return reportGit(stderr, "git commit", err);
-    git.push(io, dir) catch |err| return reportGit(stderr, "git push", err);
+    git.commit(io, dir, msg) catch |err| return reportGitFailure(stderr, gitFailure(.commit, err, dir));
+    git.push(io, dir) catch |err| return reportGitFailure(stderr, gitFailure(.push, err, dir));
     return 0;
 }
 
@@ -353,10 +357,11 @@ fn printFile(io: Io, file_path: []const u8, stdout: *Io.Writer, stderr: *Io.Writ
 }
 
 /// ファイルの中身を `w` にそのまま書く。
-/// ⚠ `Reader.streamRemaining` に stdio の writer を渡さない。sendfile / copy_file_range が使えない
-///   出力先 (Linux の `>>`、そして std の実装上 macOS / Windows) では、ReleaseSafe だと書き込み側の
-///   バッファを要求してパニックし (バッファを持たない stdioWriter)、Debug だと copy_file_range の
-///   EBADF をバグとしてパニックする (hidetzu/zemo#27 のレビュー)。
+/// ⚠ `Reader.streamRemaining` に stdio の writer を渡さない。sendfile が使えない出力先
+///   (Linux の `>>`、そして std の実装上 macOS / Windows) では書き込み側のバッファを要求し、
+///   バッファを持たない stdioWriter だとパニックする。Linux の Debug ではその手前で、
+///   copy_file_range の EBADF をバグとしてパニックする (copy_file_range を使うのは std では
+///   Linux と FreeBSD だけ) (hidetzu/zemo#27 のレビュー)。
 fn copyFileTo(io: Io, file: Io.File, w: *Io.Writer) !void {
     var buf: [4096]u8 = undefined;
     var offset: u64 = 0;
@@ -493,7 +498,7 @@ fn editAndPostSync(
     stderr: *Io.Writer,
     dir: []const u8,
     file_path: []const u8,
-    is_repo: bool,
+    repo: git.Repo,
     subject: CommitSubject,
 ) !u8 {
     const result = try editor.runEditor(allocator, io, env, file_path);
@@ -514,7 +519,7 @@ fn editAndPostSync(
         },
     }
 
-    if (!is_repo) return 0;
+    if (try syncGate(stderr, repo, dir)) |code| return code;
 
     const ts = try time.nowLocalString(allocator);
     defer allocator.free(ts);
@@ -533,18 +538,98 @@ fn editAndPostSync(
 /// stage → 差分が無ければ何もしない → commit → push。
 /// ⚠ 変わっていないのにコミットしない。ユーザが読む履歴にノイズを足すことになる。
 fn stageCommitPush(io: Io, stderr: *Io.Writer, dir: []const u8, msg: []const u8) !u8 {
-    git.addAll(io, dir) catch |err| return reportGit(stderr, "git add", err);
+    git.addAll(io, dir) catch |err| return reportGitFailure(stderr, gitFailure(.add, err, dir));
     const has_changes = git.hasStagedChanges(io, dir) catch |err|
-        return reportGit(stderr, "git diff", err);
+        return reportGitFailure(stderr, gitFailure(.diff, err, dir));
     if (!has_changes) return 0;
 
-    git.commit(io, dir, msg) catch |err| return reportGit(stderr, "git commit", err);
-    git.push(io, dir) catch |err| return reportGit(stderr, "git push", err);
+    git.commit(io, dir, msg) catch |err| return reportGitFailure(stderr, gitFailure(.commit, err, dir));
+    git.push(io, dir) catch |err| return reportGitFailure(stderr, gitFailure(.push, err, dir));
     return 0;
 }
 
-fn reportGit(stderr: *Io.Writer, label: []const u8, err: anyerror) !u8 {
-    try stderr.print("zemo: {s} failed: {s}\n", .{ label, @errorName(err) });
+/// 同期に進むか。`null` なら進む。値なら、その終了コードで止まる。
+/// ⚠ `.git` の無い memo は同期しない設定であって失敗ではない (0)。git が無いのは、同期するはずの
+///   memo を同期できなかった失敗 (1) (hidetzu/zemo#25 の owner 判断)。
+fn syncGate(stderr: *Io.Writer, repo: git.Repo, dir: []const u8) !?u8 {
+    return switch (repo) {
+        .root => null,
+        .not_root => 0,
+        .git_missing => try reportGitFailure(stderr, .{ .no_git = .{ .dir = dir, .when = .after_edit } }),
+    };
+}
+
+pub const GitStep = enum { pull, add, diff, commit, push };
+
+/// git の段階が止まった理由。⚠ 文面は `reportGitFailure` だけが書く。
+pub const GitFailure = union(enum) {
+    /// git は動いて、失敗を返した。git 自身のメッセージは上に出ている。
+    failed: struct { step: GitStep, dir: []const u8 },
+    /// git が無い (PATH に無い)、commit より前。⚠ push 時に無いのは `could_not_run` (`gitFailure`)。
+    no_git: struct { dir: []const u8, when: enum { sync, after_edit } },
+    /// git を起動できなかった (見つからない以外の理由、または push 時に見つからない)。
+    /// ⚠ git のメッセージは出ていない。
+    could_not_run: struct { step: GitStep, dir: []const u8 },
+};
+
+/// git 呼び出しのエラーを振り分ける。⚠ pull は編集の前、ほかは編集の後。
+/// ⚠ push の時点では commit 済みなので、git が無くても「not committed」とは言えない。
+///   承認済みの「could not start git push」に寄せる (hidetzu/zemo#25 の owner 判断、2026-10-19)。
+fn gitFailure(step: GitStep, err: anyerror, dir: []const u8) GitFailure {
+    return switch (err) {
+        error.GitFailed => .{ .failed = .{ .step = step, .dir = dir } },
+        error.GitNotFound => switch (step) {
+            .pull => .{ .no_git = .{ .dir = dir, .when = .sync } },
+            .push => .{ .could_not_run = .{ .step = step, .dir = dir } },
+            .add, .diff, .commit => .{ .no_git = .{ .dir = dir, .when = .after_edit } },
+        },
+        else => .{ .could_not_run = .{ .step = step, .dir = dir } },
+    };
+}
+
+fn reportGitFailure(stderr: *Io.Writer, failure: GitFailure) !u8 {
+    switch (failure) {
+        .failed => |f| switch (f.step) {
+            .push => try stderr.print(
+                "zemo: could not push to the remote; git's message is above.\n" ++
+                    "      The change is committed in {s} but not pushed. Push it with: git -C {s} push\n",
+                .{ f.dir, f.dir },
+            ),
+            .pull => try stderr.writeAll(
+                "zemo: could not pull from the remote; git's message is above.\n" ++
+                    "      Nothing was changed. Fix the remote, then run the command again.\n",
+            ),
+            .add, .diff, .commit => try stderr.print(
+                "zemo: git {s} failed in {s}; git's message is above.\n" ++
+                    "      Your file is saved; it was not committed.\n",
+                .{ @tagName(f.step), f.dir },
+            ),
+        },
+        .no_git => |n| switch (n.when) {
+            .sync => try stderr.print(
+                "zemo: git is not installed or not on PATH, so {s} cannot be synced.\n" ++
+                    "      Install git, then run zemo sync.\n",
+                .{n.dir},
+            ),
+            .after_edit => try stderr.print(
+                "zemo: git is not installed or not on PATH; your note is saved in {s} but not committed.\n" ++
+                    "      Install git, then run zemo sync.\n",
+                .{n.dir},
+            ),
+        },
+        .could_not_run => |c| switch (c.step) {
+            .pull => try stderr.print(
+                "zemo: could not start git pull in {s}.\n" ++
+                    "      Nothing was changed. Check that git runs, then run the command again.\n",
+                .{c.dir},
+            ),
+            .add, .diff, .commit, .push => try stderr.print(
+                "zemo: could not start git {s} in {s}.\n" ++
+                    "      Your file is saved; it was not {s}.\n",
+                .{ @tagName(c.step), c.dir, if (c.step == .push) "pushed" else "committed" },
+            ),
+        },
+    }
     return 1;
 }
 
@@ -856,7 +941,7 @@ fn writeFileReplacing(
 const IdeasCtx = struct {
     memo: []u8,
     file_path: []u8,
-    is_repo: bool,
+    repo: git.Repo,
 
     fn deinit(self: IdeasCtx, allocator: std.mem.Allocator) void {
         allocator.free(self.file_path);
@@ -875,13 +960,13 @@ fn openIdeasCtx(
     const memo = try paths.memoDir(allocator, io, env);
     errdefer allocator.free(memo);
 
-    var is_repo = false;
+    var repo: git.Repo = .not_root;
     if (pull_first) {
         try ensureDir(io, memo);
-        is_repo = git.isGitRepo(allocator, io, memo);
-        if (is_repo) {
+        repo = git.repoAt(allocator, io, memo);
+        if (repo == .root) {
             git.pull(io, memo) catch |err| {
-                _ = try reportGit(stderr, "git pull", err);
+                _ = try reportGitFailure(stderr, gitFailure(.pull, err, memo));
                 allocator.free(memo);
                 return null;
             };
@@ -892,7 +977,7 @@ fn openIdeasCtx(
     }
 
     const file_path = try paths.ideaPath(allocator, memo, name);
-    return .{ .memo = memo, .file_path = file_path, .is_repo = is_repo };
+    return .{ .memo = memo, .file_path = file_path, .repo = repo };
 }
 
 fn doIdeasNew(
@@ -922,7 +1007,7 @@ fn doIdeasNew(
         stderr,
         ctx.memo,
         ctx.file_path,
-        ctx.is_repo,
+        ctx.repo,
         .{ .idea = name },
     );
 }
@@ -1098,7 +1183,7 @@ fn doIdeasStatus(
     // ⚠ 両端を出す。"ok" では、直前の値という「これから確かめられなくなるもの」が残らない。
     try stdout.print("{s}: {s} -> {s}\n", .{ nv.name, from.name(), to.name() });
 
-    if (!loaded.ctx.is_repo) return 0;
+    if (try syncGate(stderr, loaded.ctx.repo, loaded.ctx.memo)) |code| return code;
     const msg = try std.fmt.allocPrint(
         allocator,
         "docs(ideas): {s} {s} -> {s}",
@@ -1159,7 +1244,7 @@ fn doIdeasPriority(
     const to_text = priorityText(&to_buf, want);
     try stdout.print("{s}: priority {s} -> {s}\n", .{ nv.name, from_text, to_text });
 
-    if (!loaded.ctx.is_repo) return 0;
+    if (try syncGate(stderr, loaded.ctx.repo, loaded.ctx.memo)) |code| return code;
     const msg = try std.fmt.allocPrint(
         allocator,
         "docs(ideas): {s} priority {s} -> {s}",
@@ -1941,4 +2026,122 @@ test "dumpMemos: an append-mode file gets every section through the stdio writer
     var read_buf: [256]u8 = undefined;
     const n = try back.readPositionalAll(io, &read_buf, 0);
     try std.testing.expectEqualStrings("=== scratch ===\n\nscratch\n\n=== t1 ===\n\n# t1\nbody\n", read_buf[0..n]);
+}
+
+// ---- git failure wording (hidetzu/zemo#25) ----
+
+fn gitFailureText(buf: []u8, failure: GitFailure) ![]const u8 {
+    var w = Io.Writer.fixed(buf);
+    try std.testing.expectEqual(@as(u8, 1), try reportGitFailure(&w, failure));
+    return w.buffered();
+}
+
+test "reportGitFailure: a refused push says the commit is local and how to push it" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: could not push to the remote; git's message is above.\n" ++
+            "      The change is committed in /m but not pushed. Push it with: git -C /m push\n",
+        try gitFailureText(&buf, gitFailure(.push, error.GitFailed, "/m")),
+    );
+}
+
+test "reportGitFailure: a failed pull says nothing was changed" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: could not pull from the remote; git's message is above.\n" ++
+            "      Nothing was changed. Fix the remote, then run the command again.\n",
+        try gitFailureText(&buf, gitFailure(.pull, error.GitFailed, "/m")),
+    );
+}
+
+test "reportGitFailure: add, diff and commit say the file is saved and not committed" {
+    var buf: [512]u8 = undefined;
+    inline for (.{ GitStep.add, GitStep.diff, GitStep.commit }) |step| {
+        try std.testing.expectEqualStrings(
+            "zemo: git " ++ @tagName(step) ++ " failed in /m; git's message is above.\n" ++
+                "      Your file is saved; it was not committed.\n",
+            try gitFailureText(&buf, gitFailure(step, error.GitFailed, "/m")),
+        );
+    }
+}
+
+test "reportGitFailure: git missing is not 'not a repo', before and after editing" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: git is not installed or not on PATH, so /m cannot be synced.\n" ++
+            "      Install git, then run zemo sync.\n",
+        try gitFailureText(&buf, gitFailure(.pull, error.GitNotFound, "/m")),
+    );
+    try std.testing.expectEqualStrings(
+        "zemo: git is not installed or not on PATH; your note is saved in /m but not committed.\n" ++
+            "      Install git, then run zemo sync.\n",
+        try gitFailureText(&buf, gitFailure(.commit, error.GitNotFound, "/m")),
+    );
+}
+
+test "reportGitFailure: git that could not start never claims git's message is above" {
+    var buf: [512]u8 = undefined;
+    const pull = try gitFailureText(&buf, gitFailure(.pull, error.AccessDenied, "/m"));
+    try std.testing.expect(std.mem.indexOf(u8, pull, "message is above") == null);
+    try std.testing.expectEqualStrings(
+        "zemo: could not start git pull in /m.\n" ++
+            "      Nothing was changed. Check that git runs, then run the command again.\n",
+        pull,
+    );
+    try std.testing.expectEqualStrings(
+        "zemo: could not start git push in /m.\n" ++
+            "      Your file is saved; it was not pushed.\n",
+        try gitFailureText(&buf, gitFailure(.push, error.AccessDenied, "/m")),
+    );
+}
+
+test "reportGitFailure: git missing after editing says the note is saved, at add and diff too" {
+    var buf: [512]u8 = undefined;
+    inline for (.{ GitStep.add, GitStep.diff }) |step| {
+        try std.testing.expectEqualStrings(
+            "zemo: git is not installed or not on PATH; your note is saved in /m but not committed.\n" ++
+                "      Install git, then run zemo sync.\n",
+            try gitFailureText(&buf, gitFailure(step, error.GitNotFound, "/m")),
+        );
+    }
+}
+
+test "reportGitFailure: git that could not start at add, diff or commit says the file is not committed" {
+    var buf: [512]u8 = undefined;
+    inline for (.{ GitStep.add, GitStep.diff, GitStep.commit }) |step| {
+        try std.testing.expectEqualStrings(
+            "zemo: could not start git " ++ @tagName(step) ++ " in /m.\n" ++
+                "      Your file is saved; it was not committed.\n",
+            try gitFailureText(&buf, gitFailure(step, error.AccessDenied, "/m")),
+        );
+    }
+}
+
+test "reportGitFailure: git missing at push never says the note is not committed" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: could not start git push in /m.\n" ++
+            "      Your file is saved; it was not pushed.\n",
+        try gitFailureText(&buf, gitFailure(.push, error.GitNotFound, "/m")),
+    );
+}
+
+test "reportGitFailure: no error name reaches the sentence" {
+    var buf: [512]u8 = undefined;
+    inline for (.{ GitStep.pull, GitStep.add, GitStep.diff, GitStep.commit, GitStep.push }) |step| {
+        inline for (.{ error.GitFailed, error.GitNotFound, error.AccessDenied }) |err| {
+            const text = try gitFailureText(&buf, gitFailure(step, err, "/m"));
+            try std.testing.expect(std.mem.indexOf(u8, text, @errorName(err)) == null);
+        }
+    }
+}
+
+test "syncGate: no .git skips with 0, git missing stops with 1, a repo root proceeds" {
+    var buf: [512]u8 = undefined;
+    var w = Io.Writer.fixed(&buf);
+    try std.testing.expectEqual(@as(?u8, null), try syncGate(&w, .root, "/m"));
+    try std.testing.expectEqual(@as(?u8, 0), try syncGate(&w, .not_root, "/m"));
+    try std.testing.expectEqualStrings("", w.buffered());
+    try std.testing.expectEqual(@as(?u8, 1), try syncGate(&w, .git_missing, "/m"));
+    try std.testing.expect(std.mem.startsWith(u8, w.buffered(), "zemo: git is not installed or not on PATH; your note is saved in /m"));
 }
