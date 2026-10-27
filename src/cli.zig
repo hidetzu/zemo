@@ -520,6 +520,10 @@ fn editAndPostSync(
             try stderr.print("zemo: editor not found: {s}\n", .{name});
             return 1;
         },
+        .could_not_start => |c| {
+            defer allocator.free(c.name);
+            return reportEditorCouldNotStart(stderr, c.name, c.why);
+        },
         .no_editor => {
             try stderr.writeAll("zemo: no editor configured (set ZEMO_EDITOR/VISUAL/EDITOR or install nvim/vim/vi)\n");
             return 1;
@@ -540,6 +544,25 @@ fn editAndPostSync(
     defer allocator.free(msg);
 
     return stageCommitPush(io, stderr, dir, msg);
+}
+
+/// エディタが見つかったのに起動できなかったときの文 (hidetzu/zemo#28)。⚠ エラー名は出さない。
+/// ⚠ 「シェルから動くか」とは言わない。シェルの組み込みやエイリアス (`true` など) はシェルでは
+///   動くが、zemo からは起動できない。#28 はまさにそれで見つかった。
+fn reportEditorCouldNotStart(stderr: *Io.Writer, name: []const u8, why: editor.StartFailure) !u8 {
+    switch (why) {
+        .permission_denied => try stderr.print(
+            "zemo: could not start the editor {s}: permission denied.\n" ++
+                "      Check that it is an executable file, or set ZEMO_EDITOR to another editor.\n",
+            .{name},
+        ),
+        .not_executable => try stderr.print(
+            "zemo: could not start the editor {s}.\n" ++
+                "      Check that it is an executable file (a shell alias or builtin will not do), or set ZEMO_EDITOR to another editor.\n",
+            .{name},
+        ),
+    }
+    return 1;
 }
 
 /// stage → 差分が無ければ何もしない → commit → push。
@@ -2257,6 +2280,27 @@ test "reportGitFailure: no error name reaches the sentence" {
             const text = try gitFailureText(&buf, gitFailure(step, err, "/m"));
             try std.testing.expect(std.mem.indexOf(u8, text, @errorName(err)) == null);
         }
+    }
+}
+
+test "reportEditorCouldNotStart: names the editor and never an error name" {
+    var buf: [512]u8 = undefined;
+    var w = Io.Writer.fixed(&buf);
+    try std.testing.expectEqual(@as(u8, 1), try reportEditorCouldNotStart(&w, "ed", .permission_denied));
+    try std.testing.expectEqualStrings(
+        "zemo: could not start the editor ed: permission denied.\n" ++
+            "      Check that it is an executable file, or set ZEMO_EDITOR to another editor.\n",
+        w.buffered(),
+    );
+    w = Io.Writer.fixed(&buf);
+    try std.testing.expectEqual(@as(u8, 1), try reportEditorCouldNotStart(&w, "true", .not_executable));
+    try std.testing.expectEqualStrings(
+        "zemo: could not start the editor true.\n" ++
+            "      Check that it is an executable file (a shell alias or builtin will not do), or set ZEMO_EDITOR to another editor.\n",
+        w.buffered(),
+    );
+    inline for (.{ "AccessDenied", "PermissionDenied", "FileSystem", "SymLinkLoop" }) |n| {
+        try std.testing.expect(std.mem.indexOf(u8, w.buffered(), n) == null);
     }
 }
 
