@@ -10,7 +10,7 @@ Turn any git repository into your terminal notebook.
 
 - `zemo` — open the scratch memo (`<memo>/scratch.txt`).
 - `zemo <topic>` — open `<memo>/topics/<topic>.md`. Created with a `# <topic>` header on first use.
-- `zemo sync` — pull, stage, commit, and push the memo repository.
+- `zemo sync` — stage, commit, pull, and push the memo repository. Committing first means uncommitted changes never stop the pull.
 - `zemo ls` — list topic names from `<memo>/topics/` (alphabetical).
 - `zemo cat [topic]` — print scratch (or `topics/<topic>.md`) to stdout. Read-only, no git operations.
 - `zemo dump` — print scratch and all topics to stdout with section headers. Read-only, no git operations.
@@ -103,7 +103,7 @@ Override the location with `ZEMO_DIR` (see [Configuration](#configuration)).
 ```sh
 zemo                # open the scratch memo
 zemo journal        # open ~/memo/topics/journal.md
-zemo sync           # manual pull / commit / push
+zemo sync           # manual commit / pull / push
 zemo ls             # list topic names
 zemo cat            # print scratch to stdout
 zemo cat journal    # print ~/memo/topics/journal.md to stdout
@@ -212,6 +212,8 @@ Editor strings are split on whitespace, so `ZEMO_EDITOR="code --wait"` works. Sh
 
 - If `<memo>` is not a git repository, `zemo` and `zemo <topic>` skip sync silently and just open the editor. `zemo sync` errors with exit code 1.
 - If `git pull --rebase` fails before opening the editor, no editor is launched and exit code 1 is returned.
+  - If `<memo>` has uncommitted changes, `git` refuses the pull. `zemo` says so; run `zemo sync` to commit and push them. `zemo` passes `--no-autostash`, so a `rebase.autoStash` setting never re-applies stashed changes on top of the pull.
+  - If the rebase stops on a conflict, `<memo>` is left mid-rebase. `zemo` says so and names `git -C <memo> rebase --continue` and `git -C <memo> rebase --abort`; it never picks a side. `zemo sync` refuses to stage anything while a rebase is in progress.
 - If the editor exits with a non-zero status, the post-edit commit/push is skipped and exit code 1 is returned.
 - If the editor binary is not found, a friendly `zemo: editor not found: …` message is printed (no Zig stack trace).
 - Timestamps are local time, formatted as `YYYY-MM-DD HH:MM`.
