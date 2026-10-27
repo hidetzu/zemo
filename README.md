@@ -216,6 +216,7 @@ Editor strings are split on whitespace, so `ZEMO_EDITOR="code --wait"` works. Sh
   - If the rebase stops on a conflict, `<memo>` is left mid-rebase. `zemo` says so and names `git -C <memo> rebase --continue` and `git -C <memo> rebase --abort`; it never picks a side. `zemo sync` refuses to stage anything while a rebase is in progress.
 - If the editor exits with a non-zero status, the post-edit commit/push is skipped and exit code 1 is returned.
 - If the editor binary is not found, a friendly `zemo: editor not found: …` message is printed (no Zig stack trace).
+- If the editor is found but cannot be started — no execute permission, a directory, a symlink loop — `zemo` names the editor, says to check that it is an executable file, and exits with status 1. A shell alias or builtin cannot be used as the editor.
 - Timestamps are local time, formatted as `YYYY-MM-DD HH:MM`.
 
 ## Exit codes

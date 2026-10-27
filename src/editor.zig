@@ -7,9 +7,39 @@ pub const RunResult = union(enum) {
     /// エディタの実行ファイルが PATH 上に見つからなかった。中身は名前。
     /// 呼び出し側のアロケータで free すること。
     editor_not_found: []u8,
+    /// エディタは見つかったが起動できなかった。`name` は呼び出し側のアロケータで free すること。
+    could_not_start: struct { name: []u8, why: StartFailure },
     /// env / fallback ともに該当エディタが無い。
     no_editor,
 };
+
+/// エディタを起動できなかった理由。⚠ 次の一手が言えるものだけ (hidetzu/zemo#28)。
+pub const StartFailure = enum {
+    /// 実行権限が無い (実行ビットの無いファイル、ディレクトリ)。
+    permission_denied,
+    /// 実行できるファイルではない (シンボリックリンクのループ、壊れた実行ファイルなど)。
+    not_executable,
+};
+
+/// spawn のエラーを、文にできる結果に振り分ける。`null` はそのまま返すエラー。
+/// ⚠ 資源不足やメモリ不足は「エディタを確かめて」と言うと嘘になるので、ここでは文にしない。
+/// ⚠ シンボリックリンクのループは Linux では `FileSystem` で返る (2026-10-27、Zig 0.17.0 で実測)。
+pub fn classifySpawnError(err: anyerror) ?StartFailure {
+    return switch (err) {
+        error.AccessDenied, error.PermissionDenied => .permission_denied,
+        error.FileSystem,
+        error.SymLinkLoop,
+        error.InvalidExe,
+        error.IsDir,
+        error.NotDir,
+        error.FileBusy,
+        error.NameTooLong,
+        error.BadPathName,
+        error.InvalidName,
+        => .not_executable,
+        else => null,
+    };
+}
 
 pub const OsKind = enum { windows, unix };
 
@@ -137,7 +167,10 @@ pub fn runEditor(
     // 4. 子プロセス起動 → 終了待ち
     var child = std.process.spawn(io, .{ .argv = argv.items }) catch |err| switch (err) {
         error.FileNotFound => return RunResult{ .editor_not_found = try allocator.dupe(u8, argv.items[0]) },
-        else => return err,
+        else => {
+            const why = classifySpawnError(err) orelse return err;
+            return RunResult{ .could_not_start = .{ .name = try allocator.dupe(u8, argv.items[0]), .why = why } };
+        },
     };
     const term = try child.wait(io);
 
@@ -182,6 +215,18 @@ test "resolveEditor: uses chosen fallback when no env vars set" {
 test "resolveEditor: errors when no env vars and no fallback" {
     const a = std.testing.allocator;
     try std.testing.expectError(error.NoEditor, resolveEditor(a, null, null, null, null));
+}
+
+test "classifySpawnError: permission, not executable, and the rest left alone" {
+    try std.testing.expectEqual(@as(?StartFailure, .permission_denied), classifySpawnError(error.AccessDenied));
+    try std.testing.expectEqual(@as(?StartFailure, .permission_denied), classifySpawnError(error.PermissionDenied));
+    try std.testing.expectEqual(@as(?StartFailure, .not_executable), classifySpawnError(error.FileSystem));
+    try std.testing.expectEqual(@as(?StartFailure, .not_executable), classifySpawnError(error.SymLinkLoop));
+    try std.testing.expectEqual(@as(?StartFailure, .not_executable), classifySpawnError(error.IsDir));
+    // 次の一手を言えないものは文にしない。
+    try std.testing.expectEqual(@as(?StartFailure, null), classifySpawnError(error.OutOfMemory));
+    try std.testing.expectEqual(@as(?StartFailure, null), classifySpawnError(error.SystemResources));
+    try std.testing.expectEqual(@as(?StartFailure, null), classifySpawnError(error.ProcessFdQuotaExceeded));
 }
 
 test "fallbackCandidates: unix list" {
