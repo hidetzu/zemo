@@ -231,6 +231,47 @@ PLAIN="$(mktemp -d)"
 ZEMO_DIR="$PLAIN" PATH="$NOGIT" ZEMO_EDITOR="$NOGIT/ed" "$BIN"; echo "exit=$?"   # expect: nothing printed, exit=0 (no .git: no sync, as before)
 ```
 
+- ⚠ **A pull that `git` refuses, or that stops mid-rebase, is checked on purpose** — ⚠ **once with a
+  clean git config and once with `rebase.autoStash=true`**, because the user's own config decides
+  what `git pull` does and ⚠ **a developer machine with autoStash on hides the refusal entirely:**
+
+```sh
+P="$(mktemp -d)"
+printf '[user]\n\tname = zemo-verify\n\temail = zemo@example.invalid\n[init]\n\tdefaultBranch = main\n' > "$P/plain.cfg"
+cp "$P/plain.cfg" "$P/autostash.cfg"; printf '[rebase]\n\tautoStash = true\n' >> "$P/autostash.cfg"
+for cfg in plain autostash; do
+  export GIT_CONFIG_GLOBAL="$P/$cfg.cfg" GIT_CONFIG_NOSYSTEM=1 ZEMO_DIR="$P/$cfg/memo" ZEMO_EDITOR=true
+  R="$P/$cfg"; mkdir -p "$R"
+  git init -q --bare "$R/remote.git"; git clone -q "$R/remote.git" "$R/memo" 2>/dev/null
+  printf 'base\n' > "$R/memo/scratch.txt"
+  git -C "$R/memo" add -A; git -C "$R/memo" commit -qm init; git -C "$R/memo" push -q origin main   # ⚠ the seed
+  git clone -q "$R/remote.git" "$R/other"
+  other() { printf '%s\n' "$2" > "$R/other/$1"; git -C "$R/other" add -A; git -C "$R/other" commit -qm "$1"; git -C "$R/other" push -q; }
+
+  # an uncommitted change, and the remote moved another file
+  other r.txt remote; printf 'mine\n' >> "$R/memo/scratch.txt"
+  "$BIN"; echo "exit=$?"            # expect: "<memo> has changes that are not committed", never "Fix the remote", exit=1
+  "$BIN" sync; echo "exit=$?"       # expect: exit=0 — ⚠ this is the recovery the README names
+  git --git-dir="$R/remote.git" show main:scratch.txt   # expect: base, mine
+
+  # an uncommitted change to the file the remote also changed
+  git -C "$R/other" pull -q; other scratch.txt theirs; printf 'conflicting\n' > "$R/memo/scratch.txt"
+  "$BIN"; echo "exit=$?"            # expect: exit=1; scratch.txt still reads "conflicting"
+  "$BIN" sync; echo "exit=$?"       # expect: "git pull stopped partway through a rebase", --continue, --abort, exit=1
+  "$BIN"; echo "exit=$?"            # expect: the same, on the next run
+  "$BIN" sync; echo "exit=$?"       # expect: "<memo> is partway through a rebase, so nothing was synced", exit=1
+  git -C "$R/memo" ls-files -u | wc -l                     # expect: non-zero — ⚠ nothing was staged mid-rebase
+  git --git-dir="$R/remote.git" grep -c '<<<<<<<' main --; echo "exit=$?"   # expect: exit=1 — ⚠ no marker reached the remote
+  git -C "$R/memo" stash list | wc -l                      # expect: 0
+done
+```
+
+⚠ **Observed on 2026-10-27 against `5b4c215` (`v0.4.1`), git 2.56.0**: ⚠ **with a plain config both
+uncommitted cases said "Fix the remote" and `zemo sync` exited `1`;** ⚠ **with `rebase.autoStash=true`,
+`zemo` exited `0`, pushed `<<<<<<< Updated upstream` to the remote, and left an `autostash` entry in
+`git stash list`.** ⚠ **The second `sync` and the `ls-files -u` line catch `add -A` run mid-rebase** —
+⚠ **removing the check made the count `0`.**
+
 ⚠ **Observed on 2026-10-18 while writing this step**: ⚠ **`ln -s "$(command -v true)"` made `true -> true`
 (the builtin's name, not a path), the editor could not start, and zemo printed `error: FileSystem`** —
 ⚠ **a broken fixture, and separately an error name reaching the user from the editor launch (not this
