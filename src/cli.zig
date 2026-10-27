@@ -114,7 +114,7 @@ const HELP_TEXT =
     \\USAGE:
     \\  zemo                Open scratch memo
     \\  zemo <topic>        Open topics/<topic>.md
-    \\  zemo sync           Manually pull/commit/push the memo repo
+    \\  zemo sync           Manually commit/pull/push the memo repo
     \\  zemo ls             List topic names (alphabetical)
     \\  zemo cat            Print scratch memo to stdout
     \\  zemo cat <topic>    Print topics/<topic>.md to stdout
@@ -219,7 +219,7 @@ fn openScratch(
     // 未追跡ファイルが pull を妨げないようにする）
     const repo = git.repoAt(allocator, io, dir);
     if (repo == .root) {
-        git.pull(io, dir) catch |err| return reportGitFailure(stderr, gitFailure(.pull, err, dir));
+        if (try pullOrReport(allocator, io, stderr, dir, false)) |code| return code;
     }
 
     const file_path = try paths.scratchPath(allocator, dir);
@@ -250,7 +250,7 @@ fn openTopic(
     // pull はファイル作成より先（理由は openScratch 参照）
     const repo = git.repoAt(allocator, io, dir);
     if (repo == .root) {
-        git.pull(io, dir) catch |err| return reportGitFailure(stderr, gitFailure(.pull, err, dir));
+        if (try pullOrReport(allocator, io, stderr, dir, false)) |code| return code;
     }
 
     const topics_dir = try std.fs.path.join(allocator, &.{ dir, "topics" });
@@ -286,13 +286,19 @@ fn doSync(
         },
     }
 
-    git.pull(io, dir) catch |err| return reportGitFailure(stderr, gitFailure(.pull, err, dir));
+    // ⚠ rebase 途中で `add -A` すると、コンフリクトマーカーの残ったファイルを解決済みとして
+    //   ステージし、そのままコミットしてしまう。何も触らずに止まる。
+    if (git.rebaseInProgress(allocator, io, dir)) return reportGitFailure(stderr, .{ .mid_rebase = .{ .dir = dir, .git_ran = false } });
+
+    // ⚠ コミットが pull より先。未コミットの変更があると `pull --rebase` は拒むので、pull が先だと
+    //   「git を入れたら zemo sync」も「保存はしたがコミットされていない」からの復旧も通らない。
     git.addAll(io, dir) catch |err| return reportGitFailure(stderr, gitFailure(.add, err, dir));
 
     const has_changes = git.hasStagedChanges(io, dir) catch |err|
         return reportGitFailure(stderr, gitFailure(.diff, err, dir));
 
     if (!has_changes) {
+        if (try pullOrReport(allocator, io, stderr, dir, false)) |code| return code;
         try stdout.writeAll("No local changes\n");
         return 0;
     }
@@ -303,6 +309,7 @@ fn doSync(
     defer allocator.free(msg);
 
     git.commit(io, dir, msg) catch |err| return reportGitFailure(stderr, gitFailure(.commit, err, dir));
+    if (try pullOrReport(allocator, io, stderr, dir, true)) |code| return code;
     git.push(io, dir) catch |err| return reportGitFailure(stderr, gitFailure(.push, err, dir));
     return 0;
 }
@@ -570,7 +577,43 @@ pub const GitFailure = union(enum) {
     /// git を起動できなかった (見つからない以外の理由、または push 時に見つからない)。
     /// ⚠ git のメッセージは出ていない。
     could_not_run: struct { step: GitStep, dir: []const u8 },
+    /// pull の rebase がコンフリクトで止まり、memo は rebase 途中のまま。
+    /// ⚠ 「Nothing was changed」とは言えない。work tree にはコンフリクトマーカーがある。
+    /// `git_ran = false` は、`zemo sync` が rebase 途中を見て git を呼ばずに止まったとき。
+    mid_rebase: struct { dir: []const u8, git_ran: bool },
+    /// 未コミットの変更があって、git が pull を拒んだ。⚠ リモートのせいではない (CLAUDE.md §4-1)。
+    uncommitted: []const u8,
+    /// `zemo sync` がコミットした後で、pull が失敗した (rebase 途中を除く)。
+    /// ⚠ コミットは済んでいるので「Nothing was changed」とは言えない。
+    pull_after_commit: struct { dir: []const u8, git_ran: bool },
 };
+
+/// pull の失敗を振り分ける。`block` は pull 後の memo の状態 (`git.pullBlock`)。
+/// ⚠ 状態を見るのは git が動いて失敗したときだけ。起動できなかったなら何も変わっていない。
+fn pullFailure(err: anyerror, dir: []const u8, block: git.PullBlock, committed: bool) GitFailure {
+    if (err == error.GitFailed) switch (block) {
+        .rebase_in_progress => return .{ .mid_rebase = .{ .dir = dir, .git_ran = true } },
+        .uncommitted => return .{ .uncommitted = dir },
+        .none => {},
+    };
+    if (committed) return .{ .pull_after_commit = .{ .dir = dir, .git_ran = err == error.GitFailed } };
+    return gitFailure(.pull, err, dir);
+}
+
+/// pull して、失敗したら何が残ったかを調べて言う。`null` なら進む。値なら、その終了コードで止まる。
+fn pullOrReport(
+    allocator: std.mem.Allocator,
+    io: Io,
+    stderr: *Io.Writer,
+    dir: []const u8,
+    committed: bool,
+) !?u8 {
+    git.pull(io, dir) catch |err| {
+        const block: git.PullBlock = if (err == error.GitFailed) git.pullBlock(allocator, io, dir) else .none;
+        return try reportGitFailure(stderr, pullFailure(err, dir, block, committed));
+    };
+    return null;
+}
 
 /// git 呼び出しのエラーを振り分ける。⚠ pull は編集の前、ほかは編集の後。
 /// ⚠ push の時点では commit 済みなので、git が無くても「not committed」とは言えない。
@@ -629,6 +672,32 @@ fn reportGitFailure(stderr: *Io.Writer, failure: GitFailure) !u8 {
                 .{ @tagName(c.step), c.dir, if (c.step == .push) "pushed" else "committed" },
             ),
         },
+        .mid_rebase => |m| {
+            if (m.git_ran) {
+                try stderr.print("zemo: git pull stopped partway through a rebase in {s}; git's message is above.\n", .{m.dir});
+            } else {
+                try stderr.print("zemo: {s} is partway through a rebase, so nothing was synced.\n", .{m.dir});
+            }
+            try stderr.print(
+                "      Resolve the conflict, then run: git -C {s} rebase --continue\n" ++
+                    "      Or return to where you were with: git -C {s} rebase --abort\n",
+                .{ m.dir, m.dir },
+            );
+        },
+        .uncommitted => |dir| try stderr.print(
+            "zemo: could not pull: {s} has changes that are not committed.\n" ++
+                "      Nothing was changed. Commit and push them with zemo sync, then run the command again.\n",
+            .{dir},
+        ),
+        .pull_after_commit => |p| if (p.git_ran) try stderr.print(
+            "zemo: could not pull from the remote; git's message is above.\n" ++
+                "      The change is committed in {s} but not pushed. Fix the remote, then run zemo sync.\n",
+            .{p.dir},
+        ) else try stderr.print(
+            "zemo: could not start git pull in {s}.\n" ++
+                "      The change is committed in {s} but not pushed. Check that git runs, then run zemo sync.\n",
+            .{ p.dir, p.dir },
+        ),
     }
     return 1;
 }
@@ -965,11 +1034,10 @@ fn openIdeasCtx(
         try ensureDir(io, memo);
         repo = git.repoAt(allocator, io, memo);
         if (repo == .root) {
-            git.pull(io, memo) catch |err| {
-                _ = try reportGitFailure(stderr, gitFailure(.pull, err, memo));
+            if (try pullOrReport(allocator, io, stderr, memo, false)) |_| {
                 allocator.free(memo);
                 return null;
-            };
+            }
         }
         const ideas_dir = try std.fs.path.join(allocator, &.{ memo, "ideas" });
         defer allocator.free(ideas_dir);
@@ -2052,6 +2120,62 @@ test "reportGitFailure: a failed pull says nothing was changed" {
             "      Nothing was changed. Fix the remote, then run the command again.\n",
         try gitFailureText(&buf, gitFailure(.pull, error.GitFailed, "/m")),
     );
+}
+
+test "reportGitFailure: a pull stopped mid-rebase never says nothing was changed" {
+    var buf: [512]u8 = undefined;
+    const text = try gitFailureText(&buf, pullFailure(error.GitFailed, "/m", .rebase_in_progress, false));
+    try std.testing.expect(std.mem.indexOf(u8, text, "Nothing was changed") == null);
+    try std.testing.expectEqualStrings(
+        "zemo: git pull stopped partway through a rebase in /m; git's message is above.\n" ++
+            "      Resolve the conflict, then run: git -C /m rebase --continue\n" ++
+            "      Or return to where you were with: git -C /m rebase --abort\n",
+        text,
+    );
+    // ⚠ sync がコミットした後でも、rebase 途中ならこの文。
+    try std.testing.expectEqualStrings(text, try gitFailureText(&buf, pullFailure(error.GitFailed, "/m", .rebase_in_progress, true)));
+}
+
+test "reportGitFailure: sync that found a rebase in progress never claims git's message is above" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: /m is partway through a rebase, so nothing was synced.\n" ++
+            "      Resolve the conflict, then run: git -C /m rebase --continue\n" ++
+            "      Or return to where you were with: git -C /m rebase --abort\n",
+        try gitFailureText(&buf, .{ .mid_rebase = .{ .dir = "/m", .git_ran = false } }),
+    );
+}
+
+test "reportGitFailure: a pull refused for uncommitted changes never blames the remote" {
+    var buf: [512]u8 = undefined;
+    const text = try gitFailureText(&buf, pullFailure(error.GitFailed, "/m", .uncommitted, false));
+    try std.testing.expect(std.mem.indexOf(u8, text, "remote") == null);
+    try std.testing.expectEqualStrings(
+        "zemo: could not pull: /m has changes that are not committed.\n" ++
+            "      Nothing was changed. Commit and push them with zemo sync, then run the command again.\n",
+        text,
+    );
+}
+
+test "reportGitFailure: a pull that failed after sync committed says the change is committed" {
+    var buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "zemo: could not pull from the remote; git's message is above.\n" ++
+            "      The change is committed in /m but not pushed. Fix the remote, then run zemo sync.\n",
+        try gitFailureText(&buf, pullFailure(error.GitFailed, "/m", .none, true)),
+    );
+    try std.testing.expectEqualStrings(
+        "zemo: could not start git pull in /m.\n" ++
+            "      The change is committed in /m but not pushed. Check that git runs, then run zemo sync.\n",
+        try gitFailureText(&buf, pullFailure(error.AccessDenied, "/m", .none, true)),
+    );
+}
+
+test "pullFailure: the state is read only when git ran, and otherwise the old sentences stand" {
+    // git が起動できなかったなら、残った状態は pull のせいではない。
+    try std.testing.expectEqualDeep(gitFailure(.pull, error.GitNotFound, "/m"), pullFailure(error.GitNotFound, "/m", .rebase_in_progress, false));
+    try std.testing.expectEqualDeep(gitFailure(.pull, error.AccessDenied, "/m"), pullFailure(error.AccessDenied, "/m", .uncommitted, false));
+    try std.testing.expectEqualDeep(gitFailure(.pull, error.GitFailed, "/m"), pullFailure(error.GitFailed, "/m", .none, false));
 }
 
 test "reportGitFailure: add, diff and commit say the file is saved and not committed" {

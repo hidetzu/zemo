@@ -67,9 +67,69 @@ pub fn repoAt(allocator: std.mem.Allocator, io: Io, dir: []const u8) Repo {
     return if (std.mem.eql(u8, toplevel, dir_real)) .root else .not_root;
 }
 
+/// ⚠ `--no-autostash` はユーザーの `rebase.autoStash` を打ち消すため。autostash は、退避した変更を
+///   戻すときにコンフリクトしても exit 0 を返し、コンフリクトマーカーを work tree に残す。続く
+///   `add -A` と `commit` がそのマーカーを push してしまう (rebase.autoStash=true で実測)。
+///   未コミットの変更があれば pull は失敗し、`pullBlock` がその理由を言い当てる。
 pub fn pull(io: Io, dir: []const u8) !void {
-    const argv = [_][]const u8{ "git", "-C", dir, "pull", "--rebase" };
+    const argv = [_][]const u8{ "git", "-C", dir, "pull", "--rebase", "--no-autostash" };
     _ = try run(io, &argv, .{});
+}
+
+/// pull が git 側で失敗したとき、memo ディレクトリが何の状態で残ったか。
+/// ⚠ 3 つは次の一手が違う: rebase を続けるか戻す / zemo sync でコミットする / リモートを直す。
+pub const PullBlock = enum { rebase_in_progress, uncommitted, none };
+
+/// ⚠ rebase 途中が先。途中の work tree は HEAD と違うので、未コミットの変更としても見えてしまう。
+pub fn classifyPullBlock(rebase_in_progress: bool, has_uncommitted: bool) PullBlock {
+    if (rebase_in_progress) return .rebase_in_progress;
+    if (has_uncommitted) return .uncommitted;
+    return .none;
+}
+
+/// pull 失敗後の状態を調べる。
+/// ⚠ 調べられなかったものは「無い」に倒れ、従来どおりの文面 (`.none`) になる。新しい文面は、
+///   その状態を実際に見たときだけ出す。
+pub fn pullBlock(allocator: std.mem.Allocator, io: Io, dir: []const u8) PullBlock {
+    return classifyPullBlock(rebaseInProgress(allocator, io, dir), hasUncommittedChanges(allocator, io, dir));
+}
+
+/// rebase が途中で止まっているか。`rebase-merge` (merge backend) と `rebase-apply` (apply backend)
+/// のどちらかが git dir にあれば途中。
+/// ⚠ git dir は `.git` 決め打ちにしない。worktree では `.git` がファイルで、実体は別の場所にある。
+/// ⚠ 調べられなかったときは false (`pullBlock` 参照)。
+pub fn rebaseInProgress(allocator: std.mem.Allocator, io: Io, dir: []const u8) bool {
+    const argv = [_][]const u8{ "git", "-C", dir, "rev-parse", "--absolute-git-dir" };
+    const result = std.process.run(allocator, io, .{ .argv = &argv }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| if (code != 0) return false,
+        else => return false,
+    }
+    const git_dir = std.mem.trimEnd(u8, result.stdout, "\r\n");
+
+    for ([_][]const u8{ "rebase-merge", "rebase-apply" }) |name| {
+        const p = std.fs.path.join(allocator, &.{ git_dir, name }) catch return false;
+        defer allocator.free(p);
+        if (Io.Dir.accessAbsolute(io, p, .{})) |_| return true else |_| {}
+    }
+    return false;
+}
+
+/// 追跡中のファイルに、コミットされていない変更 (staged / unstaged) があるか。
+/// `pull --rebase` が拒むのはこれ。未追跡のファイルは pull を止めないので数えない。
+/// ⚠ HEAD が無い (コミットが 1 つも無い) と git は 128 を返す。調べられなかったので false。
+///   出力は捕まえて捨てる。git の `fatal:` が zemo の文の上に並ぶと、それが原因に読める。
+fn hasUncommittedChanges(allocator: std.mem.Allocator, io: Io, dir: []const u8) bool {
+    const argv = [_][]const u8{ "git", "-C", dir, "diff", "--quiet", "HEAD", "--" };
+    const result = std.process.run(allocator, io, .{ .argv = &argv }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    return switch (result.term) {
+        .exited => |code| code == 1,
+        else => false,
+    };
 }
 
 pub fn addAll(io: Io, dir: []const u8) !void {
@@ -147,6 +207,13 @@ test "repoAt: not_root for subdir of a repo" {
     defer a.free(sub);
 
     try std.testing.expectEqual(Repo.not_root, repoAt(a, io, sub));
+}
+
+test "classifyPullBlock: a rebase in progress wins over uncommitted changes" {
+    try std.testing.expectEqual(PullBlock.rebase_in_progress, classifyPullBlock(true, true));
+    try std.testing.expectEqual(PullBlock.rebase_in_progress, classifyPullBlock(true, false));
+    try std.testing.expectEqual(PullBlock.uncommitted, classifyPullBlock(false, true));
+    try std.testing.expectEqual(PullBlock.none, classifyPullBlock(false, false));
 }
 
 test "classifyProbeError: git_missing only when git is absent and .git is there" {
