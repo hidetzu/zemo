@@ -272,6 +272,23 @@ uncommitted cases said "Fix the remote" and `zemo sync` exited `1`;** ⚠ **with
 `git stash list`.** ⚠ **The second `sync` and the `ls-files -u` line catch `add -A` run mid-rebase** —
 ⚠ **removing the check made the count `0`.**
 
+- ⚠ **An editor that is found but cannot be started is checked on purpose** (hidetzu/zemo#28) —
+  ⚠ **the unit tests cover the classification, not that `runEditor` goes through it:**
+
+```sh
+ED="$(mktemp -d)"; mkdir -p "$ED/loop" "$ED/noexec" "$ED/dir/ed" "$ED/memo"
+ln -s true "$ED/loop/true"                                           # ⚠ a loop, on purpose this time
+printf '#!/bin/sh\nexit 0\n' > "$ED/noexec/ed"                       # no execute bit
+ZEMO_DIR="$ED/memo" PATH="$ED/loop" ZEMO_EDITOR=true "$BIN"; echo "exit=$?"
+                    # expect: "could not start the editor true." + "executable file (a shell alias or builtin will not do)", exit=1
+ZEMO_DIR="$ED/memo" PATH="$ED/noexec" ZEMO_EDITOR=ed "$BIN"; echo "exit=$?"   # expect: "could not start the editor ed: permission denied.", exit=1
+ZEMO_DIR="$ED/memo" ZEMO_EDITOR="$ED/dir/ed" "$BIN"; echo "exit=$?"            # expect: "…: permission denied.", exit=1
+```
+
+⚠ **On `ebec599` all three printed an error name (`error: FileSystem`, `error: AccessDenied`) —
+observed 2026-10-27, Zig 0.17.0, Linux x86_64.** ⚠ **Bypassing the classification in `runEditor`
+passes every unit test and fails only here.**
+
 ⚠ **Observed on 2026-10-18 while writing this step**: ⚠ **`ln -s "$(command -v true)"` made `true -> true`
 (the builtin's name, not a path), the editor could not start, and zemo printed `error: FileSystem`** —
 ⚠ **a broken fixture, and separately an error name reaching the user from the editor launch (not this
