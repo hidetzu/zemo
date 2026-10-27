@@ -146,7 +146,7 @@ const IDEAS_USAGE =
     \\
 ;
 
-const VERSION = "0.4.1";
+const VERSION = "0.4.2";
 
 /// stdout / stderr 用の writer。
 /// ⚠ streaming で開く。`.init` は positional で、writer ごとに自分の位置 0 から書く。
